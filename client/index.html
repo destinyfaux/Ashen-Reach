@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>ASHENREACH</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d0f12'/%3E%3Cpath d='M16 5l3 7 7 3-7 3-3 7-3-7-7-3 7-3z' fill='%23b8952f'/%3E%3C/svg%3E" />
+  <style>
+    @font-face { font-family: 'Cinzel'; src: url('/fonts/Cinzel.woff2') format('woff2'); font-weight: 400; }
+    @font-face { font-family: 'Cinzel'; src: url('/fonts/CinzelBold.woff2') format('woff2'); font-weight: 700; }
+    @font-face { font-family: 'EB Garamond'; src: url('/fonts/EBGaramond.ttf') format('truetype'); font-weight: 400; }
+    @font-face { font-family: 'EB Garamond'; src: url('/fonts/EBGaramondSemiBold.ttf') format('truetype'); font-weight: 600; }
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #050608; }
+    #app { position: fixed; inset: 0; }
+    canvas { display: block; }
+  </style>
+  <link rel="stylesheet" href="/theme.css" />
+  <!-- FIX 11 — panel styles (character record / satchel / escape menu).
+       Source: client/src/ui/panels.css, imported by main.ts; esbuild bundles
+       the entry graph's CSS into client/public/app.css (tools/build.mjs). -->
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="boot-splash">
+      <div class="bs-mark"></div>
+      <div class="bs-title">ASHENREACH</div>
+      <div class="bs-sub">kindling the reach…</div>
+    </div>
+  </div>
+  <noscript><div style="position:fixed;inset:0;display:grid;place-items:center;color:#cfc6b8;font-family:Georgia,serif;background:#050608">The reach requires the old magics — enable JavaScript.</div></noscript>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
