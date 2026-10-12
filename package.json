@@ -1,0 +1,28 @@
+{
+  "name": "ashenreach",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ASHENREACH — 3D multiplayer dark-fantasy RPG (5E SRD). Minimal-dependency build.",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node server/src/index.js",
+    "dev": "npm run build && npm run start",
+    "smoke": "node tools/smoke.mjs",
+    "test": "node --test \"server/src/rules/*.test.js\" server/src/GameManager.test.js"
+  },
+  "dependencies": {
+    "three": "^0.169.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3",
+    "@types/three": "^0.169.0",
+    "@types/ws": "^8.5.13"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
+  }
+}
