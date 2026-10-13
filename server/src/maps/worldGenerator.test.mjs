@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   generateOverworld, isOverworldCellWalkable, validateOverworld, WORLD_PCG_RULES,
+  isPointInHalfTile, isOverworldPointWalkable,
 } from './worldGenerator.mjs';
 
 test('overworld generation is deterministic for a fixed seed', () => {
@@ -111,3 +112,47 @@ test('water remains grounded and terrain grades stay gradual across representati
       `seed ${seed}: terrain has an abrupt ${steepestNeighbor.toFixed(1)} ft step`);
   }
 });
+
+test('half-tiles partition cells into corner-to-corner right triangles correctly', () => {
+  // NW triangle (u + v <= 1): right angle at NW
+  assert.equal(isPointInHalfTile(0.2, 0.2, 'nw'), true);
+  assert.equal(isPointInHalfTile(0.8, 0.8, 'nw'), false);
+
+  // SE triangle (u + v >= 1): right angle at SE
+  assert.equal(isPointInHalfTile(0.8, 0.8, 'se'), true);
+  assert.equal(isPointInHalfTile(0.2, 0.2, 'se'), false);
+
+  // NE triangle (u >= v): right angle at NE
+  assert.equal(isPointInHalfTile(0.8, 0.2, 'ne'), true);
+  assert.equal(isPointInHalfTile(0.2, 0.8, 'ne'), false);
+
+  // SW triangle (u <= v): right angle at SW
+  assert.equal(isPointInHalfTile(0.2, 0.8, 'sw'), true);
+  assert.equal(isPointInHalfTile(0.8, 0.2, 'sw'), false);
+});
+
+test('overworld generates half-tile transitions for water and roads with correct walkability', () => {
+  const map = generateOverworld({ seed: 73021 });
+  assert.ok(Array.isArray(map.cells.halfTiles), 'map has halfTiles array');
+  assert.ok(map.cells.halfTiles.length > 0, 'halfTiles are generated');
+
+  const waterHalfs = map.cells.halfTiles.filter((h) => h.type === 'water');
+  const roadHalfs = map.cells.halfTiles.filter((h) => h.type === 'road');
+  assert.ok(waterHalfs.length > 0, 'water half-tiles exist for shorelines');
+  assert.ok(roadHalfs.length > 0, 'road half-tiles exist for paths');
+
+  // Verify half-water tile precision collision: open half is walkable, water half is blocked
+  const firstWater = waterHalfs[0];
+  const { x, z, orientation } = firstWater;
+
+  // NW orientation: (x, z) to (x+1, z) to (x, z+1) is water; SE corner is open
+  if (orientation === 'nw') {
+    // Water point: (x + 0.2, z + 0.2) in cell coords -> world ft = * 5
+    assert.equal(isOverworldPointWalkable(map, (x + 0.2) * 5, (z + 0.2) * 5), false,
+      'water half of half-tile must be blocked');
+    // Dry land point: (x + 0.8, z + 0.8)
+    assert.equal(isOverworldPointWalkable(map, (x + 0.8) * 5, (z + 0.8) * 5), true,
+      'dry land half of half-tile must be walkable (no invisible collision)');
+  }
+});
+

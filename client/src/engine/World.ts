@@ -76,6 +76,11 @@ export class World {
   private embers: THREE.Points | null = null;
   private motes: THREE.Points | null = null;
   private groundFog: THREE.Mesh | null = null;
+  private groundFogLayers: THREE.Mesh[] = [];
+  private heightFogVolume: THREE.Mesh | null = null;
+  private sunShafts: THREE.Mesh | null = null;
+  private heightFogMat: THREE.ShaderMaterial | null = null;
+  private sunShaftsMat: THREE.ShaderMaterial | null = null;
   private groundFogOp = 0;
   private deadlandFog = false;
   private skyDome!: THREE.Mesh;
@@ -368,35 +373,275 @@ export class World {
     this.eng.scene.add(this.motes);
   }
 
-  // ── ground fog: low translucent plane, animated noise alpha ───────────────
+  // ── layered ground fog with undulating waves, radial feathering, and dual-noise drift ──
   private buildGroundFog(map: MapDef) {
     const W = map.size.w * CELL, H = map.size.h * CELL;
     const deadland = map.biomeBounds?.deadlands?.[0];
     this.deadlandFog = !!deadland;
-    const width = deadland ? deadland.radiusX * CELL * 2 : W;
-    const height = deadland ? deadland.radiusZ * CELL * 2 : H;
-    let centerY = 1.8;
+    const width = deadland ? deadland.radiusX * CELL * 2.2 : W * 1.15;
+    const height = deadland ? deadland.radiusZ * CELL * 2.2 : H * 1.15;
+    let baseElevation = 0;
     if (deadland && map.terrain) {
       const x = Math.max(0, Math.min(map.size.w, Math.round(deadland.x)));
       const z = Math.max(0, Math.min(map.size.h, Math.round(deadland.z)));
-      centerY = (map.terrain.heightFt[z * map.terrain.width + x] || 0) + 1.6;
+      baseElevation = map.terrain.heightFt[z * map.terrain.width + x] || 0;
     }
-    const tex = noiseTexture(256);
-    tex.repeat.set(width / 22, height / 22);
-    this.groundFog = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, height),
-      new THREE.MeshBasicMaterial({
-        color: 0x10171a, alphaMap: tex, transparent: true, opacity: 0, depthWrite: false
-      })
-    );
-    this.groundFog.rotation.x = -Math.PI / 2;
-    this.groundFog.position.set(
-      deadland ? deadland.x * CELL : W / 2,
-      centerY,
-      deadland ? deadland.z * CELL : H / 2,
-    );
-    this.groundFog.renderOrder = 1;   // under FogOfWar plane (renderOrder 2)
-    this.eng.scene.add(this.groundFog);
+
+    const nTex = noiseTexture(256);
+    const centerX = deadland ? deadland.x * CELL : W / 2;
+    const centerZ = deadland ? deadland.z * CELL : H / 2;
+
+    const tierHeights = this.isCrypt ? [0.8, 2.2] : [1.4, 3.8, 7.2];
+    const tierSpeeds: [number, number][] = [
+      [0.007, 0.0035],
+      [-0.0045, 0.006],
+      [0.003, -0.0045]
+    ];
+
+    for (let i = 0; i < tierHeights.length; i++) {
+      const yPos = baseElevation + tierHeights[i];
+      const mat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uNoiseTex: { value: nTex },
+          uColor: { value: new THREE.Color(this.isCrypt ? 0x0c1618 : 0x1b1d1e) },
+          uOpacity: { value: 0.0 },
+          uSpeed: { value: new THREE.Vector2(tierSpeeds[i][0], tierSpeeds[i][1]) },
+          uTile: { value: new THREE.Vector2(width / (26 + i * 8), height / (26 + i * 8)) },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          varying vec3 vWorldPos;
+          uniform float uTime;
+          void main() {
+            vUv = uv;
+            vec3 pos = position;
+            pos.z += sin(pos.x * 0.045 + uTime * 0.7 + float(${i})) * cos(pos.y * 0.045 + uTime * 0.6) * 0.4;
+            vec4 wp = modelMatrix * vec4(pos, 1.0);
+            vWorldPos = wp.xyz;
+            gl_Position = projectionMatrix * viewMatrix * wp;
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime;
+          uniform sampler2D uNoiseTex;
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          uniform vec2 uSpeed;
+          uniform vec2 uTile;
+          varying vec2 vUv;
+          varying vec3 vWorldPos;
+          void main() {
+            // Soft radial feathering - no hard rectangular borders
+            float distFromCenter = length(vUv * 2.0 - 1.0);
+            float radial = 1.0 - smoothstep(0.42, 0.98, distFromCenter);
+            if (radial <= 0.001) discard;
+
+            vec2 uv1 = vUv * uTile + uSpeed * uTime * 0.25;
+            vec2 uv2 = vUv * (uTile * 1.6) - vec2(uSpeed.y, uSpeed.x) * uTime * 0.2;
+            float n1 = texture2D(uNoiseTex, uv1).r;
+            float n2 = texture2D(uNoiseTex, uv2).r;
+            float mist = mix(n1, n2, 0.48);
+            mist = smoothstep(0.2, 0.8, mist);
+
+            float alpha = uOpacity * radial * mist;
+            gl_FragColor = vec4(uColor, alpha);
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+          }
+        `,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(width, height, 16, 16), mat);
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(centerX, yPos, centerZ);
+      plane.renderOrder = 1;
+      this.eng.scene.add(plane);
+      this.groundFogLayers.push(plane);
+    }
+  }
+
+  // ── volumetric height fog volume: exponential altitude attenuation + solar in-scattering ──
+  private buildHeightFogVolume(map: MapDef) {
+    const W = map.size.w * CELL, H = map.size.h * CELL;
+    const radius = Math.max(W, H) * 0.75 + 160;
+    const volumeHeight = this.isCrypt ? 42 : 180;
+    const geo = new THREE.CylinderGeometry(radius, radius, volumeHeight, 28, 8, true);
+
+    this.heightFogMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uCameraPos: { value: new THREE.Vector3() },
+        uFogColor: { value: new THREE.Color(this.isCrypt ? 0x070c0c : 0x4a545e) },
+        uSunColor: { value: new THREE.Color(0xd8c2a2) },
+        uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
+        uBaseHeight: { value: 0.0 },
+        uHeightFalloff: { value: this.isCrypt ? 0.075 : 0.038 },
+        uDensity: { value: 0.22 },
+        uNoiseTex: { value: noiseTexture(256) },
+      },
+      vertexShader: `
+        varying vec3 vWorldPos;
+        varying vec3 vViewPos;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          vec4 mvp = modelViewMatrix * vec4(position, 1.0);
+          vViewPos = mvp.xyz;
+          gl_Position = projectionMatrix * mvp;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uCameraPos;
+        uniform vec3 uFogColor;
+        uniform vec3 uSunColor;
+        uniform vec3 uSunDirection;
+        uniform float uBaseHeight;
+        uniform float uHeightFalloff;
+        uniform float uDensity;
+        uniform sampler2D uNoiseTex;
+        varying vec3 vWorldPos;
+        varying vec3 vViewPos;
+        varying vec2 vUv;
+
+        void main() {
+          vec3 toFrag = vWorldPos - uCameraPos;
+          float dist = length(toFrag);
+          vec3 viewDir = normalize(toFrag);
+
+          // Exponential height falloff: dense in low valleys/crypts, thinning above
+          float fragH = max(0.0, vWorldPos.y - uBaseHeight);
+          float camH = max(0.0, uCameraPos.y - uBaseHeight);
+          float avgH = (fragH + camH) * 0.5;
+          float heightFactor = exp(-avgH * uHeightFalloff);
+
+          // Optical depth accumulation along the ray
+          float distFactor = 1.0 - exp(-dist * 0.0075);
+
+          // Billowing atmospheric noise drifting in world space
+          vec2 noiseCoord = vWorldPos.xz * 0.005 + vec2(uTime * 0.0025, uTime * 0.0018);
+          float n = texture2D(uNoiseTex, noiseCoord).r;
+          float mistBillow = 0.72 + 0.38 * n;
+
+          float fogFactor = clamp(distFactor * heightFactor * uDensity * mistBillow, 0.0, 0.88);
+
+          // Forward solar in-scattering (Mie glow when facing sun/moon)
+          float sunDot = max(0.0, dot(viewDir, normalize(uSunDirection)));
+          float sunScatter = pow(sunDot, 5.0) * 0.42;
+          vec3 finalColor = mix(uFogColor, uSunColor, sunScatter);
+
+          // Fade smoothly near camera to prevent hard near-plane clipping
+          float camFade = smoothstep(6.0, 30.0, dist);
+          fogFactor *= camFade;
+
+          if (fogFactor <= 0.002) discard;
+          gl_FragColor = vec4(finalColor, fogFactor);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }
+      `,
+      side: THREE.DoubleSide,
+      transparent: true,
+      depthWrite: false,
+    });
+
+    this.heightFogVolume = new THREE.Mesh(geo, this.heightFogMat);
+    this.heightFogVolume.position.set(W / 2, volumeHeight / 2 - 5, H / 2);
+    this.heightFogVolume.renderOrder = 2;
+    this.eng.scene.add(this.heightFogVolume);
+  }
+
+  // ── volumetric sun & moon light shafts (god rays) ──────────────────────────
+  private buildVolumetricShafts(map: MapDef) {
+    if (this.eng.lowgfx) return; // preserve low-end performance
+    const W = map.size.w * CELL, H = map.size.h * CELL;
+    const baseR = this.isCrypt ? 85 : 340;
+    const topR = this.isCrypt ? 12 : 35;
+    const height = this.isCrypt ? 90 : 380;
+    const geo = new THREE.CylinderGeometry(topR, baseR, height, 22, 6, true);
+
+    this.sunShaftsMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
+        uSunColor: { value: new THREE.Color(0xffe8c8) },
+        uCameraPos: { value: new THREE.Vector3() },
+        uIntensity: { value: 0.15 },
+        uNoiseTex: { value: noiseTexture(256) },
+      },
+      vertexShader: `
+        varying vec3 vWorldPos;
+        varying vec3 vViewPos;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          vec4 mvp = modelViewMatrix * vec4(position, 1.0);
+          vViewPos = mvp.xyz;
+          gl_Position = projectionMatrix * mvp;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uSunDirection;
+        uniform vec3 uSunColor;
+        uniform vec3 uCameraPos;
+        uniform float uIntensity;
+        uniform sampler2D uNoiseTex;
+        varying vec3 vWorldPos;
+        varying vec3 vViewPos;
+        varying vec2 vUv;
+
+        void main() {
+          if (uIntensity <= 0.001) discard;
+          vec3 viewDir = normalize(vWorldPos - uCameraPos);
+          vec3 sunDir = normalize(uSunDirection);
+
+          // Mie forward scattering phase function
+          float cosTheta = dot(viewDir, sunDir);
+          float g = 0.68;
+          float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosTheta, 1.5);
+          phase = clamp(phase * 0.28, 0.06, 2.5);
+
+          // Height falloff along the beam
+          float beamFade = smoothstep(0.0, 0.18, vUv.y) * smoothstep(1.0, 0.55, vUv.y);
+
+          // Animated dust and cloud filament streaks scrolling through the shaft
+          vec2 uv1 = vec2(vUv.x * 3.5 + uTime * 0.012, vUv.y * 1.8 - uTime * 0.024);
+          vec2 uv2 = vec2(vUv.x * 6.0 - uTime * 0.018, vUv.y * 3.2 - uTime * 0.038);
+          float n1 = texture2D(uNoiseTex, uv1).r;
+          float n2 = texture2D(uNoiseTex, uv2).r;
+          float shaftDensity = mix(n1, n2, 0.45);
+          shaftDensity = smoothstep(0.18, 0.78, shaftDensity) * 1.35;
+
+          // Camera near fade to prevent harsh clipping
+          float dist = length(vViewPos);
+          float camNearFade = smoothstep(6.0, 32.0, dist);
+
+          float alpha = uIntensity * phase * beamFade * shaftDensity * camNearFade;
+          if (alpha <= 0.002) discard;
+
+          vec3 color = uSunColor * (1.0 + phase * 0.45);
+          gl_FragColor = vec4(color * alpha, alpha * 0.82);
+        }
+      `,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      transparent: true,
+    });
+
+    this.sunShafts = new THREE.Mesh(geo, this.sunShaftsMat);
+    this.sunShafts.position.set(W / 2, 70, H / 2);
+    this.sunShafts.renderOrder = 3;
+    this.eng.scene.add(this.sunShafts);
   }
 
   setEnv(env: { time: number; weather: string; mode: string }) {
@@ -420,6 +665,8 @@ export class World {
     this.isCrypt = !tiles.outdoor;
     this.clearAtmosphere();
     this.buildGroundFog(map);
+    this.buildHeightFogVolume(map);
+    this.buildVolumetricShafts(map);
 
     const anchors: { x: number; y: number; z: number }[] = [];
     for (const l of map.lights) {
@@ -495,6 +742,26 @@ export class World {
       this.eng.scene.remove(this.groundFog);
       this.groundFog.geometry.dispose(); (this.groundFog.material as THREE.Material).dispose();
       this.groundFog = null;
+    }
+    for (const layer of this.groundFogLayers) {
+      this.eng.scene.remove(layer);
+      layer.geometry.dispose();
+      (layer.material as THREE.Material).dispose();
+    }
+    this.groundFogLayers = [];
+    if (this.heightFogVolume) {
+      this.eng.scene.remove(this.heightFogVolume);
+      this.heightFogVolume.geometry.dispose();
+      (this.heightFogVolume.material as THREE.Material).dispose();
+      this.heightFogVolume = null;
+      this.heightFogMat = null;
+    }
+    if (this.sunShafts) {
+      this.eng.scene.remove(this.sunShafts);
+      this.sunShafts.geometry.dispose();
+      (this.sunShafts.material as THREE.Material).dispose();
+      this.sunShafts = null;
+      this.sunShaftsMat = null;
     }
   }
 
@@ -581,15 +848,51 @@ export class World {
     this.rainAmt += ((this.rainTarget === 0 ? 0 : this.rainTarget) - this.rainAmt) * Math.min(1, dt * 0.4);
     fogC.density = this.fogDensity;
 
-    // ── ground fog drift
-    if (this.groundFog) {
-      const m = this.groundFog.material as THREE.MeshBasicMaterial;
-      const target = this.isCrypt ? 0.42 : this.deadlandFog ? 0.3 : 0.02;
-      this.groundFogOp += (target - this.groundFogOp) * Math.min(1, dt * 0.5);
-      m.opacity = this.groundFogOp * (0.88 + Math.sin(this.t * 0.23) * 0.12);
-      const tex = m.alphaMap!;
-      tex.offset.x = (this.t * 0.0065) % 1;
-      tex.offset.y = (this.t * 0.0042) % 1;
+    // ── layered ground fog drift
+    const fogTargetOp = this.isCrypt ? 0.52 : this.deadlandFog ? 0.38 : (this.weather === 'fog' ? 0.42 : 0.22);
+    this.groundFogOp += (fogTargetOp - this.groundFogOp) * Math.min(1, dt * 0.6);
+    const groundFogColor = this.isCrypt ? 0x0c1618 : (night ? 0x14181c : lerpHex(sky, 0x202422, 0.4));
+    for (let i = 0; i < this.groundFogLayers.length; i++) {
+      const layer = this.groundFogLayers[i];
+      const mat = layer.material as THREE.ShaderMaterial;
+      mat.uniforms.uTime.value = this.t;
+      mat.uniforms.uColor.value.setHex(groundFogColor);
+      const tierMul = 1.0 - i * 0.25;
+      mat.uniforms.uOpacity.value = this.groundFogOp * tierMul * (0.85 + Math.sin(this.t * 0.25 + i) * 0.15);
+    }
+
+    // ── volumetric height fog volume update
+    if (this.heightFogVolume && this.heightFogMat) {
+      this.heightFogMat.uniforms.uTime.value = this.t;
+      this.heightFogMat.uniforms.uCameraPos.value.copy(this.eng.camera.position);
+      const fogHex = this.isCrypt ? 0x070c0c : (night ? 0x0e141c : lerpHex(sky, 0x303840, 0.25));
+      this.heightFogMat.uniforms.uFogColor.value.setHex(fogHex);
+      this.heightFogMat.uniforms.uSunColor.value.setHex(night ? 0x8ca0cc : sunC);
+      this.heightFogMat.uniforms.uSunDirection.value.copy(skyUniforms.uSunDirection.value);
+      this.heightFogMat.uniforms.uDensity.value = this.isCrypt ? 0.38 : (this.weather === 'fog' ? 0.48 : 0.18 + this.rainAmt * 0.12);
+      this.heightFogVolume.position.x = focus.x;
+      this.heightFogVolume.position.z = focus.z;
+    }
+
+    // ── volumetric sun / moon shafts update
+    if (this.sunShafts && this.sunShaftsMat) {
+      this.sunShaftsMat.uniforms.uTime.value = this.t;
+      this.sunShaftsMat.uniforms.uCameraPos.value.copy(this.eng.camera.position);
+      const sunDir = skyUniforms.uSunDirection.value.clone();
+      if (night) sunDir.negate();
+      this.sunShaftsMat.uniforms.uSunDirection.value.copy(sunDir);
+      this.sunShaftsMat.uniforms.uSunColor.value.setHex(night ? 0x8ca0cc : sunC);
+
+      const shaftIntensity = this.isCrypt
+        ? 0.08
+        : (night
+          ? (0.06 * nightF)
+          : (0.16 + Math.sin(sunAngle) * 0.12) * (1.0 - this.rainAmt * 0.65));
+      this.sunShaftsMat.uniforms.uIntensity.value = this.weather === 'storm' ? shaftIntensity * 0.2 : shaftIntensity;
+
+      this.sunShafts.position.set(focus.x, 80, focus.z);
+      _v.copy(sunDir).negate();
+      this.sunShafts.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), _v);
     }
 
     // ── brazier embers rise + gutter

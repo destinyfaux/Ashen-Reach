@@ -23,16 +23,30 @@ export interface MapExit {
   id: string; label: string; x: number; z: number;
   destinationMapId?: string; returnToPrevious?: boolean;
 }
+export type HalfTileOrientation =
+  | 'nw' | 'ne' | 'se' | 'sw'
+  | 'tl' | 'tr' | 'br' | 'bl';
+
+export type TileCell = [number, number] | [number, number, HalfTileOrientation];
+
+export interface HalfTileDef {
+  x: number;
+  z: number;
+  type: 'water' | 'road' | 'wall' | 'floor';
+  orientation: HalfTileOrientation;
+}
+
 export interface MapDef {
   id: string; name: string;
   size: { w: number; h: number };
   theme: string; floor: string;
   tileSet?: string;
   cells: {
-    wall: [number, number][];
-    water?: [number, number][];
+    wall: TileCell[];
+    water?: TileCell[];
     waterSurfaceFt?: (number | null)[];
-    road?: [number, number][];
+    road?: TileCell[];
+    halfTiles?: HalfTileDef[];
   };
   walls: WallSeg[];
   lights: LightDef[];

@@ -1,6 +1,9 @@
 // ASHENREACH engine root — owns renderer + module orchestration. Framework-free.
 // World coordinates: 1 unit = 1 foot. One grid cell = 5 ft = 5 units.
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { World } from './World';
 import { TileGrid } from './TileGrid';
 import { FogOfWar } from './FogOfWar';
@@ -37,6 +40,8 @@ export class Engine {
   private timeAccum = 0;
   private areaMusic: 'crypt' | 'town' = 'crypt';
   private doorOpenByWall = new Map<number, boolean>();
+  composer: EffectComposer | null = null;
+  bloomPass: UnrealBloomPass | null = null;
   readonly lowgfx: boolean;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -60,6 +65,19 @@ export class Engine {
 
     this.camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 900);
     this.camera.position.set(30, 11, 44); // under the indoor ceiling cap from frame one
+
+    if (!this.lowgfx) {
+      const renderPass = new RenderPass(this.scene, this.camera);
+      this.bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        0.75, // strength: vibrant, rich atmospheric bloom for fires, emissives, and magical effects
+        0.5,  // radius: soft blooming halo
+        0.82  // threshold: triggers on bright light sources, sparks, and spell bursts
+      );
+      this.composer = new EffectComposer(this.renderer);
+      this.composer.addPass(renderPass);
+      this.composer.addPass(this.bloomPass);
+    }
 
     this.world = new World(this);
     this.grid = new TileGrid(this);
@@ -172,19 +190,28 @@ export class Engine {
     this.fog.update(dt);
     this.effects.update(dt);
     this.cameraRig.update(dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   private onResize = () => {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    if (this.composer) {
+      this.composer.setSize(window.innerWidth, window.innerHeight);
+    }
   };
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener('resize', this.onResize);
+    this.bloomPass?.dispose();
+    this.composer?.dispose();
     this.renderer.dispose();
   }
 }

@@ -706,3 +706,35 @@ test('dungeon exit returns to the overworld without resetting party or map progr
     name: 'Cellar Cache', qty: 1, kind: 'gear', weight: 0,
   });
 });
+
+test('GameManager movement validates half-tiles: token can walk on dry half of half-water tile, rejected in water half', () => {
+  const gm = new GameManager();
+  gm.map = {
+    id: 'test_map',
+    size: { w: 10, h: 10 },
+    cells: {
+      wall: [],
+      water: [[5, 5, 'nw']],
+    },
+    walls: [],
+    props: [],
+    spawns: { party: [[4.5, 4.5]], monsters: [] },
+  };
+  gm.rebuildWallCells();
+
+  const joined = gm.join({ name: 'Explorer' });
+  const token = gm.tokenOf(joined.you.id);
+  token.x = 22;
+  token.z = 27;
+
+  // Move onto open land portion (SE half: x=29, z=29) of cell (5, 5)
+  const dryMove = gm.move(joined.you.id, { x: 29, z: 29 });
+  assert.equal(dryMove.ok, true, 'move onto dry half of half-tile must succeed');
+
+  // Attempt to step into the water half (NW half: x=26, z=26)
+  gm.lastMoveAt.delete(token.id);
+  const wetMove = gm.move(joined.you.id, { x: 26, z: 26 });
+  assert.equal(wetMove.ok, false, 'move into water half of half-tile must be rejected');
+  assert.equal(wetMove.reason, 'blocked', 'rejection reason must be blocked');
+});
+

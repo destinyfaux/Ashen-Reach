@@ -354,6 +354,50 @@ function makeWorld(seed) {
     ...Array.from({ length: HEIGHT }, (_, z) => z * WIDTH + WIDTH - 1),
   ]);
   const party = [townCenter.x + 0.5, townCenter.z + 0.5];
+
+  const halfTiles = [];
+  for (let z = 2; z < HEIGHT - 2; z++) {
+    for (let x = 2; x < WIDTH - 2; x++) {
+      const cell = z * WIDTH + x;
+      if (waterCells.has(cell) || roadCells.has(cell) || blocked.has(cell)) continue;
+      const nW = waterCells.has((z - 1) * WIDTH + x);
+      const sW = waterCells.has((z + 1) * WIDTH + x);
+      const wW = waterCells.has(z * WIDTH + x - 1);
+      const eW = waterCells.has(z * WIDTH + x + 1);
+
+      if (nW && wW) {
+        halfTiles.push({ x, z, type: 'water', orientation: 'nw' });
+      } else if (nW && eW) {
+        halfTiles.push({ x, z, type: 'water', orientation: 'ne' });
+      } else if (sW && wW) {
+        halfTiles.push({ x, z, type: 'water', orientation: 'sw' });
+      } else if (sW && eW) {
+        halfTiles.push({ x, z, type: 'water', orientation: 'se' });
+      }
+    }
+  }
+
+  for (let z = 2; z < HEIGHT - 2; z++) {
+    for (let x = 2; x < WIDTH - 2; x++) {
+      const cell = z * WIDTH + x;
+      if (roadCells.has(cell) || waterCells.has(cell) || blocked.has(cell)) continue;
+      const nR = roadCells.has((z - 1) * WIDTH + x);
+      const sR = roadCells.has((z + 1) * WIDTH + x);
+      const wR = roadCells.has(z * WIDTH + x - 1);
+      const eR = roadCells.has(z * WIDTH + x + 1);
+
+      if (nR && wR) {
+        halfTiles.push({ x, z, type: 'road', orientation: 'nw' });
+      } else if (nR && eR) {
+        halfTiles.push({ x, z, type: 'road', orientation: 'ne' });
+      } else if (sR && wR) {
+        halfTiles.push({ x, z, type: 'road', orientation: 'sw' });
+      } else if (sR && eR) {
+        halfTiles.push({ x, z, type: 'road', orientation: 'se' });
+      }
+    }
+  }
+
   return {
     id: 'ashen_reach',
     name: 'The Ashen Reach',
@@ -368,6 +412,7 @@ function makeWorld(seed) {
       water: [...waterCells].sort((a, b) => a - b).map((cell) => [cell % WIDTH, Math.floor(cell / WIDTH)]),
       waterSurfaceFt: waterSurface,
       road: roadList.map((cell) => [cell % WIDTH, Math.floor(cell / WIDTH)]),
+      halfTiles,
     },
     terrain: { width: WIDTH + 1, height: HEIGHT + 1, heightFt: heights },
     biomes: { kinds: BIOMES, cells: biomeCells },
@@ -400,6 +445,25 @@ function makeWorld(seed) {
   };
 }
 
+export function normalizeHalfTile(orientation) {
+  if (!orientation) return 'nw';
+  const o = String(orientation).toLowerCase();
+  if (o === 'tl' || o === 'top_left' || o === 'nw' || o === 'northwest') return 'nw';
+  if (o === 'tr' || o === 'top_right' || o === 'ne' || o === 'northeast') return 'ne';
+  if (o === 'br' || o === 'bottom_right' || o === 'se' || o === 'southeast') return 'se';
+  if (o === 'bl' || o === 'bottom_left' || o === 'sw' || o === 'southwest') return 'sw';
+  return 'nw';
+}
+
+export function isPointInHalfTile(u, v, orientation) {
+  const norm = normalizeHalfTile(orientation);
+  if (norm === 'nw') return u + v <= 1.0;
+  if (norm === 'se') return u + v >= 1.0;
+  if (norm === 'ne') return u >= v;
+  if (norm === 'sw') return u <= v;
+  return true;
+}
+
 export function generateOverworld({ seed = 73021 } = {}) {
   if (!Number.isInteger(seed)) throw new TypeError('overworld seed must be an integer');
   return makeWorld(seed >>> 0);
@@ -411,6 +475,36 @@ export function isOverworldCellWalkable(map, x, z) {
   const blocked = new Set([...(map.cells?.wall || []), ...(map.cells?.water || [])]
     .map(([cellX, cellZ]) => cellZ * w + cellX));
   return !blocked.has(z * w + x);
+}
+
+export function isOverworldPointWalkable(map, worldX, worldZ) {
+  const { w, h } = map?.size || {};
+  const CELL_FT = 5;
+  if (typeof worldX !== 'number' || typeof worldZ !== 'number' ||
+      worldX < 0 || worldZ < 0 || worldX >= w * CELL_FT || worldZ >= h * CELL_FT) {
+    return false;
+  }
+  const cx = Math.floor(worldX / CELL_FT), cz = Math.floor(worldZ / CELL_FT);
+
+  // Full solid cells
+  const wallCells = new Set((map.cells?.wall || []).filter((c) => !c[2]).map(([x, z]) => z * w + x));
+  const waterCells = new Set((map.cells?.water || []).filter((c) => !c[2]).map(([x, z]) => z * w + x));
+  if (wallCells.has(cz * w + cx) || waterCells.has(cz * w + cx)) return false;
+
+  const u = (worldX - cx * CELL_FT) / CELL_FT;
+  const v = (worldZ - cz * CELL_FT) / CELL_FT;
+
+  for (const cell of [...(map.cells?.wall || []), ...(map.cells?.water || [])]) {
+    if (cell[0] === cx && cell[1] === cz && cell[2]) {
+      if (isPointInHalfTile(u, v, cell[2])) return false;
+    }
+  }
+  for (const h of map.cells?.halfTiles || []) {
+    if (h.x === cx && h.z === cz && (h.type === 'water' || h.type === 'wall')) {
+      if (isPointInHalfTile(u, v, h.orientation)) return false;
+    }
+  }
+  return true;
 }
 
 export function validateOverworld(map) {
@@ -432,6 +526,21 @@ export function validateOverworld(map) {
   if (roads.size !== roadList.length) errors.push('road cells must be unique');
   if (waterList.some(([x, z]) => isOverworldCellWalkable(map, x, z))) {
     errors.push('water cells must be blocked for movement');
+  }
+  if (Array.isArray(cells?.halfTiles)) {
+    const validOrientations = new Set(['nw', 'ne', 'se', 'sw', 'tl', 'tr', 'br', 'bl']);
+    const validTypes = new Set(['water', 'road', 'wall', 'floor']);
+    for (const h of cells.halfTiles) {
+      if (h.x < 0 || h.z < 0 || h.x >= width || h.z >= height) {
+        errors.push(`half-tile at ${h.x},${h.z} out of bounds`);
+      }
+      if (!validTypes.has(h.type)) {
+        errors.push(`half-tile at ${h.x},${h.z} has invalid type ${h.type}`);
+      }
+      if (!validOrientations.has(h.orientation)) {
+        errors.push(`half-tile at ${h.x},${h.z} has invalid orientation ${h.orientation}`);
+      }
+    }
   }
   if (roadList.some(([x, z]) => !isOverworldCellWalkable(map, x, z))) {
     errors.push('roads must stay on walkable land');

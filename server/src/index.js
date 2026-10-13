@@ -125,7 +125,7 @@ const server = http.createServer(async (req, res) => {
 
 attachWs(server, gm);
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`[ASHENREACH] server listening on http://localhost:${PORT}`);
   console.log(`[ASHENREACH] invite: http://localhost:${PORT}/j/${gm.session.inviteCode}`);
   console.log(`[ASHENREACH] dm:     http://localhost:${PORT}/?dm=${gm.dmKey}`);

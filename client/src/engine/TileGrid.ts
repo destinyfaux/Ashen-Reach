@@ -14,12 +14,31 @@
 //   the camera sweep AND movement so they never snag or yank the view.
 import * as THREE from 'three';
 import type { Engine } from './Engine';
-import type { MapDef, PropDef, WallSeg } from './types';
+import type { MapDef, PropDef, WallSeg, HalfTileOrientation, HalfTileDef } from './types';
 import type { DoorState } from '../game/store';
 import { useGame } from '../game/store';
 import { getAreaTileSet, getMaterial, getTextureSet, hash2, rngFrom } from './materials';
 import type { AreaTileSet } from './materials';
 import { glowSprite } from './sprites';
+
+export function normalizeHalfTile(orientation?: string): 'nw' | 'ne' | 'se' | 'sw' {
+  if (!orientation) return 'nw';
+  const o = orientation.toLowerCase();
+  if (o === 'tl' || o === 'top_left' || o === 'nw' || o === 'northwest') return 'nw';
+  if (o === 'tr' || o === 'top_right' || o === 'ne' || o === 'northeast') return 'ne';
+  if (o === 'br' || o === 'bottom_right' || o === 'se' || o === 'southeast') return 'se';
+  if (o === 'bl' || o === 'bottom_left' || o === 'sw' || o === 'southwest') return 'sw';
+  return 'nw';
+}
+
+export function isPointInHalfTile(u: number, v: number, orientation?: HalfTileOrientation): boolean {
+  const norm = normalizeHalfTile(orientation);
+  if (norm === 'nw') return u + v <= 1.0;
+  if (norm === 'se') return u + v >= 1.0;
+  if (norm === 'ne') return u >= v;
+  if (norm === 'sw') return u <= v;
+  return true;
+}
 
 export const CELL = 5;      // feet per cell → world units per cell
 export const WALL_H = 16;   // wall mesh height (ft)
@@ -63,6 +82,8 @@ export class TileGrid {
   private grassTime = { value: 0 };
   map: MapDef | null = null;
   open: Uint8Array = new Uint8Array(1);      // 1 = walkable
+  blockedHalfTiles = new Map<number, Set<'nw' | 'ne' | 'se' | 'sw'>>();
+  roadHalfTiles = new Map<number, Set<'nw' | 'ne' | 'se' | 'sw'>>();
   colliders: Collider[] = [];
   indoor = true;
   cameraMaxY = WALL_H - 4;                   // camera height cap (indoor default)
@@ -87,6 +108,8 @@ export class TileGrid {
     this.doorAnimations.clear();
     this.areaTiles = getAreaTileSet(map);
     this.colliders = [];  // reset (was missing before → collider dupes on reload)
+    this.blockedHalfTiles.clear();
+    this.roadHalfTiles.clear();
     this.indoor = !this.areaTiles.outdoor;
     this.cameraMaxY = this.indoor ? WALL_H - 4 : 60;
 
@@ -105,11 +128,51 @@ export class TileGrid {
     const W = map.size.w, H = map.size.h;
     this.open = new Uint8Array(W * H);
     const wallSet = new Set<number>();
-    for (const [x, z] of map.cells.wall) wallSet.add(this.key(x, z));
+    for (const cell of map.cells.wall) {
+      const [x, z, orientation] = cell;
+      if (orientation) {
+        const k = this.key(x, z);
+        let s = this.blockedHalfTiles.get(k);
+        if (!s) { s = new Set(); this.blockedHalfTiles.set(k, s); }
+        s.add(normalizeHalfTile(orientation));
+      } else {
+        wallSet.add(this.key(x, z));
+      }
+    }
     const blockedSet = new Set(wallSet);
-    for (const [x, z] of map.cells.water || []) blockedSet.add(this.key(x, z));
+    for (const cell of map.cells.water || []) {
+      const [x, z, orientation] = cell;
+      if (orientation) {
+        const k = this.key(x, z);
+        let s = this.blockedHalfTiles.get(k);
+        if (!s) { s = new Set(); this.blockedHalfTiles.set(k, s); }
+        s.add(normalizeHalfTile(orientation));
+      } else {
+        blockedSet.add(this.key(x, z));
+      }
+    }
+    for (const h of map.cells.halfTiles || []) {
+      const k = this.key(h.x, h.z);
+      if (h.type === 'water' || h.type === 'wall') {
+        let s = this.blockedHalfTiles.get(k);
+        if (!s) { s = new Set(); this.blockedHalfTiles.set(k, s); }
+        s.add(normalizeHalfTile(h.orientation));
+      } else if (h.type === 'road') {
+        let s = this.roadHalfTiles.get(k);
+        if (!s) { s = new Set(); this.roadHalfTiles.set(k, s); }
+        s.add(normalizeHalfTile(h.orientation));
+      }
+    }
     for (let z = 0; z < H; z++) for (let x = 0; x < W; x++) {
-      this.open[z * W + x] = blockedSet.has(this.key(x, z)) ? 0 : 1;
+      const k = this.key(x, z);
+      let isBlocked = blockedSet.has(k);
+      const halfs = this.blockedHalfTiles.get(k);
+      if (halfs) {
+        if ((halfs.has('nw') && halfs.has('se')) || (halfs.has('ne') && halfs.has('sw'))) {
+          isBlocked = true;
+        }
+      }
+      this.open[z * W + x] = isBlocked ? 0 : 1;
     }
 
     this.buildFloor(map, wallSet);
@@ -206,6 +269,9 @@ export class TileGrid {
     const wallAt = (x: number, z: number) =>
       x < 0 || z < 0 || x >= W || z >= H ? true : wallSet.has(this.key(x, z));
     const roadSet = new Set((map.cells.road || []).map(([x, z]) => this.key(x, z)));
+    for (const h of map.cells.halfTiles || []) {
+      if (h.type === 'road') roadSet.add(this.key(h.x, h.z));
+    }
     const biomeTints: Record<string, [number, number, number]> = {
       forest: [0.78, 1.08, 0.78], meadow: [1.08, 1.12, 0.86],
       snow_forest: [1.15, 1.24, 1.25], snowfield: [1.45, 1.52, 1.58],
@@ -264,61 +330,93 @@ export class TileGrid {
   }
 
   private buildWater(map: MapDef) {
-    const cells = map.cells.water || [];
-    if (!cells.length) return;
-    const positions = new Float32Array(cells.length * 4 * 3);
-    const indices = new Uint32Array(cells.length * 6);
+    const rawCells = map.cells.water || [];
+    const halfDefs = (map.cells.halfTiles || []).filter(h => h.type === 'water');
+    if (!rawCells.length && !halfDefs.length) return;
+
+    interface WaterUnit {
+      x: number;
+      z: number;
+      orientation?: 'nw' | 'ne' | 'se' | 'sw';
+    }
+    const units: WaterUnit[] = [];
+    for (const cell of rawCells) {
+      const [x, z, orientation] = cell;
+      units.push({ x, z, orientation: orientation ? normalizeHalfTile(orientation) : undefined });
+    }
+    for (const h of halfDefs) {
+      units.push({ x: h.x, z: h.z, orientation: normalizeHalfTile(h.orientation) });
+    }
+
+    let triCount = 0;
+    for (const u of units) {
+      triCount += u.orientation ? 1 : 2;
+    }
+    const vertexCount = triCount * 3;
+    const positions = new Float32Array(vertexCount * 3);
+    const indices = new Uint32Array(vertexCount);
+
     const heights = map.terrain?.heightFt || [];
     const terrainWidth = map.terrain?.width || 0;
-    for (let i = 0; i < cells.length; i++) {
-      const [x, z] = cells[i], vertex = i * 4, index = i * 6;
-      const corners = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
-      for (let c = 0; c < 4; c++) {
-        const [cx, cz] = corners[c];
-        const ground = terrainWidth ? heights[cz * terrainWidth + cx] || 0 : 0;
-        const at = (vertex + c) * 3;
-        positions[at] = cx * CELL;
-        positions[at + 1] = ground + 0.22;
-        positions[at + 2] = cz * CELL;
-      }
-      indices.set([vertex, vertex + 2, vertex + 1, vertex + 1, vertex + 2, vertex + 3], index);
-    }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    geometry.computeVertexNormals();
-    const surfaceLevels = map.cells.waterSurfaceFt || [];
-    const wet = new Set(cells.map(([x, z]) => this.key(x, z)));
     const fallbackHeight = (x: number, z: number) =>
       terrainWidth ? heights[z * terrainWidth + x] || 0 : 0;
+    const surfaceLevels = map.cells.waterSurfaceFt || [];
     const levelAtCell = (x: number, z: number) => {
       const level = surfaceLevels[z * map.size.w + x];
       return typeof level === 'number' ? level : fallbackHeight(x, z) + 0.28;
     };
-    for (let i = 0; i < cells.length; i++) {
-      const [x, z] = cells[i], vertex = i * 4;
-      const corners = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
-      for (let corner = 0; corner < 4; corner++) {
-        const [vx, vz] = corners[corner];
-        let total = 0, count = 0, shoreline = false;
-        for (const [cx, cz] of [[vx - 1, vz - 1], [vx, vz - 1], [vx - 1, vz], [vx, vz]]) {
-          if (cx < 0 || cz < 0 || cx >= map.size.w || cz >= map.size.h ||
-              !wet.has(this.key(cx, cz))) continue;
-          total += levelAtCell(cx, cz);
-          count++;
-          if ([[cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]]
-            .some(([nx, nz]) => nx < 0 || nz < 0 || nx >= map.size.w || nz >= map.size.h ||
-              !wet.has(this.key(nx, nz)))) shoreline = true;
-        }
-        if (count) {
-          const ground = heights[vz * terrainWidth + vx] || 0;
-          const surface = total / count;
-          positions[(vertex + corner) * 3 + 1] = shoreline ? Math.min(surface, ground - 0.12) : surface;
+
+    const wet = new Set<number>();
+    for (const u of units) wet.add(this.key(u.x, u.z));
+
+    let vIdx = 0;
+    for (const u of units) {
+      const { x, z, orientation } = u;
+      const nw = [x, z], ne = [x + 1, z], sw = [x, z + 1], se = [x + 1, z + 1];
+      const tris: number[][][] = [];
+      if (!orientation) {
+        tris.push([nw, sw, ne], [ne, sw, se]);
+      } else if (orientation === 'nw') {
+        tris.push([nw, sw, ne]);
+      } else if (orientation === 'se') {
+        tris.push([se, ne, sw]);
+      } else if (orientation === 'ne') {
+        tris.push([ne, nw, se]);
+      } else if (orientation === 'sw') {
+        tris.push([sw, se, nw]);
+      }
+
+      for (const tri of tris) {
+        for (const [vx, vz] of tri) {
+          const at = vIdx * 3;
+          positions[at] = vx * CELL;
+          positions[at + 2] = vz * CELL;
+
+          const cellX = Math.min(map.size.w - 1, Math.max(0, Math.floor(vx)));
+          const cellZ = Math.min(map.size.h - 1, Math.max(0, Math.floor(vz)));
+          const surface = levelAtCell(cellX, cellZ);
+          const ground = fallbackHeight(vx, vz);
+
+          let touchesDry = false;
+          for (const [cx, cz] of [[vx - 1, vz - 1], [vx, vz - 1], [vx - 1, vz], [vx, vz]]) {
+            if (cx < 0 || cz < 0 || cx >= map.size.w || cz >= map.size.h || !wet.has(this.key(cx, cz))) {
+              touchesDry = true;
+            }
+          }
+          if (orientation) touchesDry = true;
+
+          positions[at + 1] = touchesDry ? Math.min(surface, ground - 0.12) : surface;
+          indices[vIdx] = vIdx;
+          vIdx++;
         }
       }
     }
-    geometry.attributes.position.needsUpdate = true;
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     geometry.computeVertexNormals();
+
     this.waterMaterial = new THREE.ShaderMaterial({
       uniforms: { uTime: { value: 0 } },
       vertexShader: `
@@ -401,12 +499,34 @@ export class TileGrid {
   }
 
   private buildRoads(map: MapDef) {
-    const cells = map.cells.road || [];
-    if (!cells.length) return;
-    const positions = new Float32Array(cells.length * 12);
-    const uvs = new Float32Array(cells.length * 8);
-    const colors = new Float32Array(cells.length * 12);
-    const indices = new Uint32Array(cells.length * 6);
+    const rawCells = map.cells.road || [];
+    const halfDefs = (map.cells.halfTiles || []).filter(h => h.type === 'road');
+    if (!rawCells.length && !halfDefs.length) return;
+
+    interface RoadUnit {
+      x: number;
+      z: number;
+      orientation?: 'nw' | 'ne' | 'se' | 'sw';
+    }
+    const units: RoadUnit[] = [];
+    for (const cell of rawCells) {
+      const [x, z, orientation] = cell;
+      units.push({ x, z, orientation: orientation ? normalizeHalfTile(orientation) : undefined });
+    }
+    for (const h of halfDefs) {
+      units.push({ x: h.x, z: h.z, orientation: normalizeHalfTile(h.orientation) });
+    }
+
+    let triCount = 0;
+    for (const u of units) {
+      triCount += u.orientation ? 1 : 2;
+    }
+    const vertexCount = triCount * 3;
+    const positions = new Float32Array(vertexCount * 3);
+    const uvs = new Float32Array(vertexCount * 2);
+    const colors = new Float32Array(vertexCount * 3);
+    const indices = new Uint32Array(vertexCount);
+
     const textureCanvas = document.createElement('canvas');
     textureCanvas.width = 128; textureCanvas.height = 128;
     const context = textureCanvas.getContext('2d');
@@ -426,23 +546,43 @@ export class TileGrid {
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     const tint = new THREE.Color(0xb4a184);
-    for (let i = 0; i < cells.length; i++) {
-      const [x, z] = cells[i], vertex = i * 4, index = i * 6;
-      const corners = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
-      for (let c = 0; c < 4; c++) {
-        const [cx, cz] = corners[c], at = (vertex + c) * 3, uv = (vertex + c) * 2;
-        positions[at] = cx * CELL;
-        positions[at + 1] = this.terrainHeightAt(cx * CELL, cz * CELL) + 0.09;
-        positions[at + 2] = cz * CELL;
-        uvs[uv] = cx * CELL / 26;
-        uvs[uv + 1] = cz * CELL / 26;
-        const shade = 0.78 + hash2(x, z, 51) * 0.3;
-        colors[at] = tint.r * shade;
-        colors[at + 1] = tint.g * shade;
-        colors[at + 2] = tint.b * shade;
+
+    let vIdx = 0;
+    for (const u of units) {
+      const { x, z, orientation } = u;
+      const nw = [x, z], ne = [x + 1, z], sw = [x, z + 1], se = [x + 1, z + 1];
+      const tris: number[][][] = [];
+      if (!orientation) {
+        tris.push([nw, sw, ne], [ne, sw, se]);
+      } else if (orientation === 'nw') {
+        tris.push([nw, sw, ne]);
+      } else if (orientation === 'se') {
+        tris.push([se, ne, sw]);
+      } else if (orientation === 'ne') {
+        tris.push([ne, nw, se]);
+      } else if (orientation === 'sw') {
+        tris.push([sw, se, nw]);
       }
-      indices.set([vertex, vertex + 2, vertex + 1, vertex + 1, vertex + 2, vertex + 3], index);
+
+      for (const tri of tris) {
+        for (const [vx, vz] of tri) {
+          const at = vIdx * 3, uv = vIdx * 2;
+          const worldX = vx * CELL, worldZ = vz * CELL;
+          positions[at] = worldX;
+          positions[at + 1] = this.terrainHeightAt(worldX, worldZ) + 0.09;
+          positions[at + 2] = worldZ;
+          uvs[uv] = worldX / 26;
+          uvs[uv + 1] = worldZ / 26;
+          const shade = 0.78 + hash2(x, z, 51) * 0.3;
+          colors[at] = tint.r * shade;
+          colors[at + 1] = tint.g * shade;
+          colors[at + 2] = tint.b * shade;
+          indices[vIdx] = vIdx;
+          vIdx++;
+        }
+      }
     }
+
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
@@ -708,7 +848,11 @@ export class TileGrid {
     const coal = getMaterial('ember');
     const rocks: ScatterItem[] = [];
     const natureRocks = new Map<string, ScatterItem[]>();
-    const natureGround: ScatterItem[] = [];
+    const pebbleCluster: ScatterItem[] = [];
+    const twigs: ScatterItem[] = [];
+    const wildflowers: ScatterItem[] = [];
+    const ferns: ScatterItem[] = [];
+    const snowDrifts: ScatterItem[] = [];
     const trees: PropDef[] = [];
 
     for (const p of map.props) {
@@ -732,21 +876,70 @@ export class TileGrid {
           b: p.variant === 'snowfield' || p.variant === 'snow_forest' ? 0.86 : 0.5 + r() * 0.24,
         });
         natureRocks.set(shape, batch);
+
         if (p.type === 'boulder') {
           const radius = Math.max(1, scale * 0.8);
           this.colliders.push({ x1: x - radius, z1: z - radius, x2: x + radius, z2: z + radius, yMin: 0, yMax: 5 });
         }
-      } else if (['grass', 'wildflower', 'fern', 'twig', 'snow_drift', 'dead_brush'].includes(p.type)) {
-        const scale = (p.scale || 1) * (p.type === 'grass' ? 0.72 : p.type === 'wildflower' ? 0.48 : 0.8);
-        const dead = p.type === 'dead_brush' || p.variant === 'deadlands';
-        const snow = p.type === 'snow_drift' || p.variant === 'snow_forest' || p.variant === 'snowfield';
-        natureGround.push({
-          x: x + (r() - 0.5) * 1.7, y: this.terrainHeightAt(x, z) + scale * 0.28,
-          z: z + (r() - 0.5) * 1.7, s: scale,
-          rx: 0, ry: p.rotY || r() * Math.PI * 2, rz: (r() - 0.5) * 0.25,
-          r: snow ? 0.82 : dead ? 0.58 : p.type === 'wildflower' ? 0.9 : 0.48 + r() * 0.4,
-          g: snow ? 0.9 : dead ? 0.42 : p.type === 'wildflower' ? 0.58 : 0.56 + r() * 0.35,
-          b: snow ? 0.98 : dead ? 0.3 : p.type === 'wildflower' ? 0.36 : 0.34 + r() * 0.27,
+
+        // PCG: Spawn realistic satellite pebble & talus cluster around boulders and large rocks
+        if (p.type === 'boulder' || scale > 0.75) {
+          const numTalus = p.type === 'scree' ? 5 + Math.floor(r() * 6) : 3 + Math.floor(r() * 4);
+          for (let k = 0; k < numTalus; k++) {
+            const angle = r() * Math.PI * 2;
+            const dist = scale * (0.8 + r() * 1.2);
+            const px = x + Math.cos(angle) * dist;
+            const pz = z + Math.sin(angle) * dist;
+            const pScale = scale * (0.16 + r() * 0.28);
+            const pGround = this.terrainHeightAt(px, pz);
+            pebbleCluster.push({
+              x: px, y: pGround + pScale * 0.32, z: pz, s: pScale,
+              rx: r() * 3, ry: r() * 3, rz: r() * 3,
+              r: p.variant === 'snowfield' || p.variant === 'snow_forest' ? 0.76 : 0.58 + r() * 0.24,
+              g: p.variant === 'deadlands' ? 0.37 + r() * 0.16 : 0.55 + r() * 0.24,
+              b: p.variant === 'snowfield' || p.variant === 'snow_forest' ? 0.84 : 0.48 + r() * 0.24,
+            });
+          }
+        }
+      } else if (p.type === 'twig' || p.type === 'dead_brush') {
+        const scale = (p.scale || 1) * (p.type === 'dead_brush' ? 0.85 : 0.65);
+        const gx = x + (r() - 0.5) * 1.6, gz = z + (r() - 0.5) * 1.6;
+        twigs.push({
+          x: gx, y: this.terrainHeightAt(gx, gz) + scale * 0.15, z: gz, s: scale,
+          rx: (r() - 0.5) * 0.4, ry: p.rotY || r() * Math.PI * 2, rz: (r() - 0.5) * 0.4,
+          r: 0.38 + r() * 0.12, g: 0.28 + r() * 0.1, b: 0.2 + r() * 0.08,
+        });
+      } else if (p.type === 'wildflower') {
+        const scale = (p.scale || 1) * 0.55;
+        const gx = x + (r() - 0.5) * 1.8, gz = z + (r() - 0.5) * 1.8;
+        // Rich palette: poppy red, marigold amber, violet, cornflower blue
+        const flowerCols = [
+          [0.92, 0.24, 0.24],
+          [0.95, 0.72, 0.18],
+          [0.72, 0.38, 0.90],
+          [0.34, 0.58, 0.95],
+        ];
+        const chosen = flowerCols[Math.floor(r() * flowerCols.length)];
+        wildflowers.push({
+          x: gx, y: this.terrainHeightAt(gx, gz) + scale * 0.35, z: gz, s: scale,
+          rx: 0, ry: r() * Math.PI * 2, rz: (r() - 0.5) * 0.2,
+          r: chosen[0], g: chosen[1], b: chosen[2],
+        });
+      } else if (p.type === 'fern') {
+        const scale = (p.scale || 1) * 0.75;
+        const gx = x + (r() - 0.5) * 1.7, gz = z + (r() - 0.5) * 1.7;
+        ferns.push({
+          x: gx, y: this.terrainHeightAt(gx, gz) + scale * 0.25, z: gz, s: scale,
+          rx: 0, ry: r() * Math.PI * 2, rz: (r() - 0.5) * 0.2,
+          r: 0.24 + r() * 0.12, g: 0.52 + r() * 0.18, b: 0.22 + r() * 0.1,
+        });
+      } else if (p.type === 'snow_drift') {
+        const scale = (p.scale || 1) * 1.25;
+        const gx = x + (r() - 0.5) * 2.0, gz = z + (r() - 0.5) * 2.0;
+        snowDrifts.push({
+          x: gx, y: this.terrainHeightAt(gx, gz) + scale * 0.22, z: gz, s: scale,
+          rx: 0, ry: r() * Math.PI * 2, rz: 0,
+          r: 0.88, g: 0.92, b: 0.98,
         });
       } else if (p.type === 'bridge') {
         const bridge = new THREE.Mesh(new THREE.BoxGeometry(4.8, 0.35, 4.8), wood);
@@ -858,31 +1051,433 @@ export class TileGrid {
         }
       }
     }
-    // one instanced mesh for all loose rubble (walk-over flavor, no collider)
-    this.scatter(rocks, new THREE.DodecahedronGeometry(1, 0), getMaterial('bone', 0));
-    for (const [shape, batch] of natureRocks) {
-      this.scatter(batch, this.makeRockGeometry(shape), new THREE.MeshStandardMaterial({
-        color: 0xffffff, roughness: 0.96, metalness: 0,
-      }));
+    // PCG: Spawn landscape pebble & rock clusters across open terrain biomes
+    this.buildRockClutter(map, pebbleCluster, natureRocks);
+
+    const rockMat = this.makeRockMaterial();
+    // Loose rubble in crypt/dungeons and ruins now uses sculpted talus and rock shader
+    if (rocks.length) {
+      this.scatter(rocks, this.makeRockGeometry('talus'), rockMat);
     }
-    this.scatter(natureGround, new THREE.ConeGeometry(0.42, 1.2, 5), new THREE.MeshStandardMaterial({
-      color: 0xffffff, roughness: 0.9,
-    }));
+    for (const [shape, batch] of natureRocks) {
+      this.scatter(batch, this.makeRockGeometry(shape), rockMat);
+    }
+    // Scatter the PCG talus & companion pebbles around boulders, scree, and field clusters
+    if (pebbleCluster.length) {
+      this.scatter(pebbleCluster, this.makeRockGeometry('pebble'), rockMat);
+    }
+
+    // Model and scatter ground clutter with dedicated assets (replacing generic white cones)
+    if (twigs.length) {
+      const twigGeo = this.makeTwigGeometry();
+      this.scatter(twigs, twigGeo, new THREE.MeshStandardMaterial({ color: 0x4a3b2e, roughness: 0.94 }));
+    }
+    if (wildflowers.length) {
+      const flowerGeo = this.makeWildflowerGeometry();
+      this.scatter(wildflowers, flowerGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 }));
+    }
+    if (ferns.length) {
+      const fernGeo = this.makeFernGeometry();
+      this.scatter(ferns, fernGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, side: THREE.DoubleSide }));
+    }
+    if (snowDrifts.length) {
+      const snowGeo = this.makeSnowDriftGeometry();
+      this.scatter(snowDrifts, snowGeo, new THREE.MeshStandardMaterial({ color: 0xecf2fa, roughness: 0.82 }));
+    }
     this.buildTrees(trees);
     this.buildGrassland(map);
+  }
+
+  // ── PCG ground clutter & pebble clusters ────────────────────────────────────
+  private buildRockClutter(
+    map: MapDef,
+    pebbleCluster: ScatterItem[],
+    natureRocks: Map<string, ScatterItem[]>
+  ) {
+    const biomeCells = map.biomes?.cells;
+    const kinds = map.biomes?.kinds;
+    if (!biomeCells || !kinds || biomeCells.length !== map.size.w * map.size.h) return;
+
+    const road = new Set((map.cells.road || []).map(([x, z]) => this.key(x, z)));
+    const water = new Set((map.cells.water || []).map(([x, z]) => this.key(x, z)));
+    const wall = new Set(map.cells.wall.map(([x, z]) => this.key(x, z)));
+    const townCenter = { x: 56.5, z: 55.5 };
+
+    for (let z = 2; z < map.size.h - 2; z += 2) {
+      for (let x = 2; x < map.size.w - 2; x += 2) {
+        const cell = this.key(x, z);
+        if (road.has(cell) || water.has(cell) || wall.has(cell)) continue;
+        if (Math.hypot(x - townCenter.x, z - townCenter.z) < 14) continue;
+
+        const biome = kinds[biomeCells[z * map.size.w + x]];
+        const clusterRoll = hash2(x, z, 4001);
+
+        let spawnCluster = false;
+        let clusterCount = 0;
+        let baseScale = 0.25;
+
+        if (biome === 'mountains') {
+          if (clusterRoll > 0.42) {
+            spawnCluster = true;
+            clusterCount = 4 + Math.floor(hash2(x, z, 4002) * 5);
+            baseScale = 0.28 + hash2(x, z, 4003) * 0.24;
+          }
+        } else if (biome === 'forest') {
+          if (clusterRoll > 0.74) {
+            spawnCluster = true;
+            clusterCount = 2 + Math.floor(hash2(x, z, 4002) * 3);
+            baseScale = 0.22 + hash2(x, z, 4003) * 0.18;
+          }
+        } else if (biome === 'meadow') {
+          if (clusterRoll > 0.82) {
+            spawnCluster = true;
+            clusterCount = 2 + Math.floor(hash2(x, z, 4002) * 3);
+            baseScale = 0.18 + hash2(x, z, 4003) * 0.16;
+          }
+        } else if (biome === 'deadlands') {
+          if (clusterRoll > 0.62) {
+            spawnCluster = true;
+            clusterCount = 3 + Math.floor(hash2(x, z, 4002) * 4);
+            baseScale = 0.24 + hash2(x, z, 4003) * 0.22;
+          }
+        } else if (biome === 'snowfield' || biome === 'snow_forest') {
+          if (clusterRoll > 0.68) {
+            spawnCluster = true;
+            clusterCount = 2 + Math.floor(hash2(x, z, 4002) * 4);
+            baseScale = 0.24 + hash2(x, z, 4003) * 0.20;
+          }
+        }
+
+        if (!spawnCluster) continue;
+
+        const cx = x * CELL + CELL * 0.5;
+        const cz = z * CELL + CELL * 0.5;
+
+        for (let k = 0; k < clusterCount; k++) {
+          const kSeed = k + z * 103 + x * 991;
+          const angle = hash2(kSeed, 11, 4004) * Math.PI * 2;
+          const dist = (0.3 + hash2(kSeed, 23, 4005) * 1.8) * CELL * 0.45;
+          const px = cx + Math.cos(angle) * dist;
+          const pz = cz + Math.sin(angle) * dist;
+
+          const pCell = this.key(Math.floor(px / CELL), Math.floor(pz / CELL));
+          if (water.has(pCell) || wall.has(pCell)) continue;
+
+          const pScale = baseScale * (0.65 + hash2(kSeed, 37, 4006) * 0.7);
+          const ground = this.terrainHeightAt(px, pz);
+          const rotX = hash2(kSeed, 41, 4007) * 3;
+          const rotY = hash2(kSeed, 53, 4008) * 3;
+          const rotZ = hash2(kSeed, 67, 4009) * 3;
+
+          let rCol = 0.58 + hash2(kSeed, 71, 4010) * 0.24;
+          let gCol = 0.55 + hash2(kSeed, 79, 4011) * 0.24;
+          let bCol = 0.50 + hash2(kSeed, 83, 4012) * 0.24;
+
+          if (biome === 'snowfield' || biome === 'snow_forest') {
+            rCol = 0.76 + hash2(kSeed, 71, 4010) * 0.16;
+            gCol = 0.80 + hash2(kSeed, 79, 4011) * 0.16;
+            bCol = 0.88 + hash2(kSeed, 83, 4012) * 0.10;
+          } else if (biome === 'deadlands') {
+            rCol = 0.34 + hash2(kSeed, 71, 4010) * 0.14;
+            gCol = 0.32 + hash2(kSeed, 79, 4011) * 0.12;
+            bCol = 0.30 + hash2(kSeed, 83, 4012) * 0.12;
+          }
+
+          if (pScale > 0.42) {
+            const shape = hash2(kSeed, 89, 4013) > 0.5 ? 'talus' : 'angular';
+            const batch = natureRocks.get(shape) || [];
+            batch.push({
+              x: px, y: ground + pScale * 0.35, z: pz, s: pScale,
+              rx: rotX, ry: rotY, rz: rotZ,
+              r: rCol, g: gCol, b: bCol,
+            });
+            natureRocks.set(shape, batch);
+          } else {
+            pebbleCluster.push({
+              x: px, y: ground + pScale * 0.28, z: pz, s: pScale,
+              rx: rotX, ry: rotY, rz: rotZ,
+              r: rCol, g: gCol, b: bCol,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  private makeRockMaterial() {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.94,
+      metalness: 0.02,
+    });
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vWorldPosition;
+        varying vec3 vWorldNormal;
+        varying float vLocalY;`
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        #ifdef USE_INSTANCING
+          vec4 worldPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          mat3 normalMatrixInst = mat3(modelMatrix) * mat3(instanceMatrix);
+          vWorldNormal = normalize(normalMatrixInst * normal);
+        #else
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        #endif
+        vLocalY = position.y;`
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vWorldPosition;
+        varying vec3 vWorldNormal;
+        varying float vLocalY;`
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        // ── 1. World-Space Macro Texturing & Sedimentary Strata ──
+        float wsWarp = sin(vWorldPosition.x * 0.16 + vWorldPosition.z * 0.12) * 1.6;
+        float strataCoord = (vWorldPosition.y + wsWarp) * 0.72;
+        float strata = sin(strataCoord * 3.14159) * 0.5 + 0.5;
+        float fineBands = sin(strataCoord * 8.6) * 0.5 + 0.5;
+
+        float n1 = sin(vWorldPosition.x * 0.38 + sin(vWorldPosition.z * 0.32) * 2.2) *
+                   cos(vWorldPosition.y * 0.44 + vWorldPosition.z * 0.28);
+        float n2 = sin(vWorldPosition.x * 1.15 + vWorldPosition.y * 0.85) *
+                   cos(vWorldPosition.z * 1.05 + vWorldPosition.x * 0.65);
+        float n3 = sin(vWorldPosition.x * 2.6 + vWorldPosition.z * 2.2) *
+                   cos(vWorldPosition.y * 2.8);
+        float macroNoise = n1 * 0.54 + n2 * 0.31 + n3 * 0.15;
+
+        vec3 rockBase = diffuseColor.rgb * (0.80 + macroNoise * 0.26 + strata * 0.10 - fineBands * 0.05);
+
+        // ── 2. Top Overburden Blend (Moss / Snow / Lichen / Ash depending on biome) ──
+        vec3 wNorm = normalize(vWorldNormal);
+        float upSlope = clamp(wNorm.y, 0.0, 1.0);
+        float topElev = smoothstep(-0.20, 0.55, vLocalY + macroNoise * 0.25);
+        float topWeight = smoothstep(0.42, 0.85, upSlope) * topElev;
+
+        vec3 mossColor   = vec3(0.24, 0.38, 0.17);
+        vec3 snowColor   = vec3(0.92, 0.95, 0.99);
+        vec3 ashColor    = vec3(0.17, 0.16, 0.15);
+        vec3 lichenColor = vec3(0.50, 0.54, 0.44);
+
+        vec3 topColor = mossColor;
+        if (diffuseColor.b > 0.80 && diffuseColor.r > 0.70) {
+          topColor = snowColor;
+        } else if (diffuseColor.r < 0.44 && diffuseColor.g < 0.40) {
+          topColor = ashColor;
+        } else if (diffuseColor.r > 0.56 && diffuseColor.g > 0.52 && diffuseColor.b > 0.46) {
+          topColor = lichenColor;
+        }
+
+        vec3 stoneWithTop = mix(rockBase, topColor, topWeight * 0.80);
+
+        // ── 3. Bottom Ground Contact Blend (Loam / Mud / Slush / Ash at rock base) ──
+        float groundFactor = 1.0 - smoothstep(-0.55, 0.28, vLocalY + macroNoise * 0.18);
+        vec3 groundSoil = vec3(0.18, 0.14, 0.10);
+        if (diffuseColor.b > 0.80 && diffuseColor.r > 0.70) {
+          groundSoil = vec3(0.72, 0.78, 0.86);
+        } else if (diffuseColor.r < 0.44 && diffuseColor.g < 0.40) {
+          groundSoil = vec3(0.11, 0.10, 0.09);
+        }
+
+        diffuseColor.rgb = mix(stoneWithTop, groundSoil, groundFactor * 0.72);`
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <roughnessmap_fragment>',
+        `#include <roughnessmap_fragment>
+        roughnessFactor = mix(0.90, 0.98, topWeight * 0.5);`
+      );
+    };
+    mat.customProgramCacheKey = () => 'ashenreach-rock-ws-height-v2';
+    return mat;
   }
 
   private makeRockGeometry(shape: string) {
     const geometry = new THREE.DodecahedronGeometry(1, 0);
     const proportions: Record<string, [number, number, number]> = {
-      angular: [1, 0.92, 1], slab: [1.35, 0.54, 0.88],
-      spire: [0.76, 1.5, 0.82], ridge: [1.5, 0.78, 0.68],
-      split: [0.9, 1.08, 1.34],
+      angular: [1.06, 0.88, 1.02],
+      slab:    [1.48, 0.42, 1.15],
+      spire:   [0.72, 1.68, 0.78],
+      ridge:   [1.65, 0.72, 0.68],
+      split:   [0.96, 1.04, 1.34],
+      pebble:  [0.85, 0.44, 0.76],
+      talus:   [1.14, 0.54, 0.82],
     };
     const [sx, sy, sz] = proportions[shape] || proportions.angular;
     geometry.scale(sx, sy, sz);
+
+    const pos = geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      let vx = pos.getX(i);
+      let vy = pos.getY(i);
+      let vz = pos.getZ(i);
+
+      // Chiseled organic faceting displacement
+      const facetNoise = Math.sin(vx * 2.8 + vy * 3.4) * Math.cos(vz * 2.6 + vx * 1.5) * 0.12;
+      vx += vx * facetNoise;
+      vy += vy * facetNoise;
+      vz += vz * facetNoise;
+
+      // Base flattening: rocks seat firmly into the earth instead of sharp points underneath
+      if (vy < -0.20 * sy) {
+        vy = -0.32 * sy + (vy + 0.20 * sy) * 0.22;
+      }
+
+      pos.setXYZ(i, vx, vy, vz);
+    }
+    pos.needsUpdate = true;
     geometry.computeVertexNormals();
     return geometry;
+  }
+
+  private mergeGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
+    const nonIndexed = geos.map(g => g.index ? g.toNonIndexed() : g);
+    let totalPositions = 0;
+    for (const g of nonIndexed) {
+      const pos = g.getAttribute('position');
+      if (pos) totalPositions += pos.array.length;
+    }
+    const positions = new Float32Array(totalPositions);
+    const normals = new Float32Array(totalPositions);
+    let posOffset = 0;
+    for (const g of nonIndexed) {
+      const pos = g.getAttribute('position');
+      const norm = g.getAttribute('normal');
+      if (pos) {
+        positions.set(pos.array, posOffset);
+        if (norm) normals.set(norm.array, posOffset);
+        posOffset += pos.array.length;
+      }
+    }
+    const merged = new THREE.BufferGeometry();
+    merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    return merged;
+  }
+
+  private makeFernGeometry(): THREE.BufferGeometry {
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const colors: number[] = [];
+    const indices: number[] = [];
+
+    const frondCount = 7;
+    for (let f = 0; f < frondCount; f++) {
+      const angle = (f / frondCount) * Math.PI * 2 + (f % 2 ? 0.16 : -0.16);
+      const cosA = Math.cos(angle), sinA = Math.sin(angle);
+      const perpX = -sinA, perpZ = cosA;
+      const length = 1.15 + (f % 3) * 0.18;
+      const segs = 4;
+
+      for (let s = 0; s <= segs; s++) {
+        const t = s / segs;
+        const y = Math.sin(t * Math.PI * 0.85) * 0.36 * (1.0 - t * 0.35);
+        const r = t * length;
+        const cx = cosA * r, cz = sinA * r;
+        const w = (s === 0 ? 0.05 : s === segs ? 0.02 : 0.28 * Math.sin(t * Math.PI)) * 0.5;
+
+        const baseIdx = positions.length / 3;
+        positions.push(
+          cx - perpX * w, y, cz - perpZ * w,
+          cx + perpX * w, y, cz + perpZ * w,
+        );
+        normals.push(0, 1, 0, 0, 1, 0);
+
+        const gTone = 0.40 + t * 0.24;
+        colors.push(
+          0.16, gTone, 0.12,
+          0.16, gTone, 0.12,
+        );
+
+        if (s > 0) {
+          const prev = baseIdx - 2;
+          indices.push(
+            prev, prev + 1, baseIdx,
+            prev + 1, baseIdx + 1, baseIdx,
+          );
+        }
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  private makeTwigGeometry(): THREE.BufferGeometry {
+    const mainStem = new THREE.CylinderGeometry(0.045, 0.08, 1.8, 5);
+    mainStem.rotateZ(Math.PI / 2);
+    mainStem.rotateY(0.25);
+    mainStem.translate(0, 0.04, 0);
+
+    const fork1 = new THREE.CylinderGeometry(0.025, 0.045, 0.85, 4);
+    fork1.rotateZ(Math.PI / 2 + 0.65);
+    fork1.rotateY(-0.4);
+    fork1.translate(0.25, 0.03, 0.22);
+
+    const fork2 = new THREE.CylinderGeometry(0.02, 0.035, 0.6, 4);
+    fork2.rotateZ(Math.PI / 2 - 0.55);
+    fork2.rotateY(0.35);
+    fork2.translate(-0.35, 0.03, -0.16);
+
+    const merged = this.mergeGeometries([mainStem, fork1, fork2]);
+    mainStem.dispose();
+    fork1.dispose();
+    fork2.dispose();
+    return merged;
+  }
+
+  private makeWildflowerGeometry(): THREE.BufferGeometry {
+    const stem = new THREE.CylinderGeometry(0.03, 0.045, 0.52, 4);
+    stem.translate(0, 0.26, 0);
+
+    const leaf1 = new THREE.BoxGeometry(0.28, 0.02, 0.08);
+    leaf1.rotateY(0.4);
+    leaf1.translate(0.08, 0.06, 0.04);
+
+    const leaf2 = new THREE.BoxGeometry(0.26, 0.02, 0.08);
+    leaf2.rotateY(-0.9);
+    leaf2.translate(-0.07, 0.08, -0.05);
+
+    const blossom = new THREE.DodecahedronGeometry(0.18, 0);
+    blossom.translate(0, 0.54, 0);
+
+    const merged = this.mergeGeometries([stem, leaf1, leaf2, blossom]);
+    stem.dispose();
+    leaf1.dispose();
+    leaf2.dispose();
+    blossom.dispose();
+    return merged;
+  }
+
+  private makeSnowDriftGeometry(): THREE.BufferGeometry {
+    const geo = new THREE.SphereGeometry(1.2, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    geo.scale(1.4, 0.28, 0.95);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const vx = pos.getX(i);
+      let vy = pos.getY(i);
+      const vz = pos.getZ(i);
+      vy += Math.sin(vx * 1.5 + vz * 0.8) * 0.06;
+      pos.setXYZ(i, vx, Math.max(0.02, vy), vz);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+    return geo;
   }
 
   private buildGrassland(map: MapDef) {
@@ -892,7 +1487,7 @@ export class TileGrid {
     const road = new Set((map.cells.road || []).map(([x, z]) => this.key(x, z)));
     const water = new Set((map.cells.water || []).map(([x, z]) => this.key(x, z)));
     const wall = new Set(map.cells.wall.map(([x, z]) => this.key(x, z)));
-    const clumps: { x: number; z: number; y: number; scale: number; color: number }[] = [];
+    const clumps: { x: number; z: number; y: number; scaleXZ: number; scaleY: number; color: number }[] = [];
     for (let z = 1; z < map.size.h - 1; z++) for (let x = 1; x < map.size.w - 1; x++) {
       const cell = this.key(x, z), biome = kinds[biomeCells[z * map.size.w + x]];
       if ((biome !== 'meadow' && biome !== 'forest') ||
@@ -900,21 +1495,28 @@ export class TileGrid {
       const density = hash2(x, z, 207);
       const count = biome === 'meadow'
         ? this.eng.lowgfx
-          ? 6 + Math.floor(density * 7)
-          : 14 + Math.floor(density * 13)
-        : density > 0.32
-          ? this.eng.lowgfx ? 2 + Math.floor(density * 3) : 4 + Math.floor(density * 5)
+          ? 7 + Math.floor(density * 6)
+          : 15 + Math.floor(density * 12)
+        : density > 0.28
+          ? this.eng.lowgfx ? 3 + Math.floor(density * 4) : 6 + Math.floor(density * 6)
           : 0;
       for (let i = 0; i < count; i++) {
         const seed = i + z * map.size.w + x * 997;
-        const px = (x + 0.12 + hash2(seed, 17, 223) * 0.76) * CELL;
-        const pz = (z + 0.12 + hash2(seed, 31, 227) * 0.76) * CELL;
+        // Jitter widely across cell boundaries for seamless coverage without clumping
+        const px = (x - 0.15 + hash2(seed, 17, 223) * 1.3) * CELL;
+        const pz = (z - 0.15 + hash2(seed, 31, 227) * 1.3) * CELL;
+        const targetCell = this.key(Math.floor(px / CELL), Math.floor(pz / CELL));
+        if (road.has(targetCell) || water.has(targetCell) || wall.has(targetCell)) continue;
+
         const palette = biome === 'meadow'
           ? [0x628442, 0x7b9b4b, 0x9aab5b, 0x526f3d]
           : [0x45633c, 0x5f7945, 0x78834a];
+        const baseScale = (biome === 'meadow' ? 1.08 : 0.9) + hash2(seed, 43, 229) * 0.45;
+        const heightScale = baseScale * (0.82 + hash2(seed, 71, 241) * 0.48);
         clumps.push({
           x: px, z: pz, y: this.terrainHeightAt(px, pz),
-          scale: (biome === 'meadow' ? 0.82 : 0.68) + hash2(seed, 43, 229) * 0.55,
+          scaleXZ: baseScale,
+          scaleY: heightScale,
           color: palette[Math.floor(hash2(seed, 59, 233) * palette.length)],
         });
       }
@@ -922,29 +1524,44 @@ export class TileGrid {
     if (!clumps.length) return;
     const positions: number[] = [], indices: number[] = [];
     const vertexColors: number[] = [];
-    for (let blade = 0; blade < 3; blade++) {
-      const angle = blade * Math.PI / 3;
-      const widthX = Math.cos(angle) * 0.21, widthZ = Math.sin(angle) * 0.21;
-      const bendX = -Math.sin(angle) * 0.075, bendZ = Math.cos(angle) * 0.075;
+
+    // Varied blade profiles in the asset itself: heights range from 0.44 to 1.18 ft
+    const bladeDefs = [
+      { angle: 0.15, width: 0.22, height: 1.18, bendX: 0.14, bendZ: 0.05 },
+      { angle: 1.25, width: 0.18, height: 0.82, bendX: -0.15, bendZ: -0.08 },
+      { angle: 2.20, width: 0.16, height: 0.52, bendX: 0.18, bendZ: 0.12 },
+      { angle: 3.25, width: 0.20, height: 1.05, bendX: -0.12, bendZ: -0.06 },
+      { angle: 4.35, width: 0.17, height: 0.70, bendX: 0.19, bendZ: 0.10 },
+      { angle: 5.35, width: 0.15, height: 0.44, bendX: -0.14, bendZ: 0.07 },
+    ];
+
+    for (let b = 0; b < bladeDefs.length; b++) {
+      const def = bladeDefs[b];
+      const widthX = Math.cos(def.angle) * def.width;
+      const widthZ = Math.sin(def.angle) * def.width;
+      const midH = def.height * 0.46;
+      const topH = def.height;
       const offset = positions.length / 3;
+
       positions.push(
         -widthX, 0, -widthZ,
         widthX, 0, widthZ,
-        bendX - widthX * 0.68, 0.34, bendZ - widthZ * 0.68,
-        bendX + widthX * 0.68, 0.34, bendZ + widthZ * 0.68,
-        bendX * 2 - widthX * 0.1, 0.74, bendZ * 2 - widthZ * 0.1,
-        bendX * 2 + widthX * 0.1, 0.74, bendZ * 2 + widthZ * 0.1,
+        def.bendX - widthX * 0.65, midH, def.bendZ - widthZ * 0.65,
+        def.bendX + widthX * 0.65, midH, def.bendZ + widthZ * 0.65,
+        def.bendX * 2.2 - widthX * 0.12, topH, def.bendZ * 2.2 - widthZ * 0.12,
+        def.bendX * 2.2 + widthX * 0.12, topH, def.bendZ * 2.2 + widthZ * 0.12,
       );
       vertexColors.push(
-        0.58, 0.72, 0.52, 0.58, 0.72, 0.52,
-        0.82, 0.92, 0.67, 0.82, 0.92, 0.67,
-        1, 1, 0.79, 1, 1, 0.79,
+        0.52, 0.68, 0.46, 0.52, 0.68, 0.46,
+        0.78, 0.90, 0.64, 0.78, 0.90, 0.64,
+        0.98, 1.0, 0.78, 0.98, 1.0, 0.78,
       );
       indices.push(
         offset, offset + 1, offset + 2, offset + 1, offset + 3, offset + 2,
         offset + 2, offset + 3, offset + 4, offset + 3, offset + 5, offset + 4,
       );
     }
+
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(vertexColors, 3));
@@ -978,14 +1595,14 @@ export class TileGrid {
         #endif`,
       );
     };
-    material.customProgramCacheKey = () => 'ashenreach-instanced-grass-wind-v1';
+    material.customProgramCacheKey = () => 'ashenreach-instanced-grass-wind-v2';
     const mesh = new THREE.InstancedMesh(geometry, material, clumps.length);
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     const object = new THREE.Object3D(), color = new THREE.Color();
     clumps.forEach((clump, index) => {
       object.position.set(clump.x, clump.y, clump.z);
       object.rotation.y = hash2(index, 67, 239) * Math.PI * 2;
-      object.scale.setScalar(clump.scale);
+      object.scale.set(clump.scaleXZ, clump.scaleY, clump.scaleXZ);
       object.updateMatrix();
       mesh.setMatrixAt(index, object.matrix);
       color.setHex(clump.color);
@@ -1190,9 +1807,10 @@ export class TileGrid {
     mouth.position.set(0, 4.2, 0.2); group.add(mouth);
     const arch = new THREE.Mesh(new THREE.TorusGeometry(4, 1.15, 7, 12, Math.PI), stone);
     arch.position.set(0, 4.2, 0); group.add(arch);
+    const rockMat = this.makeRockMaterial();
     for (const side of [-1, 1]) {
-      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(2.2, 1), stone);
-      rock.position.set(side * 4.2, 1.5, 0); rock.scale.set(1.1, 1.2, 1.3);
+      const rock = new THREE.Mesh(this.makeRockGeometry('angular'), rockMat);
+      rock.position.set(side * 4.2, 1.5, 0); rock.scale.set(2.2, 2.4, 2.6);
       rock.castShadow = true; group.add(rock);
     }
     group.position.set(x, this.terrainHeightAt(x, z), z);
@@ -1261,12 +1879,22 @@ export class TileGrid {
   }
   isOpenWorld(x: number, z: number) {
     const c = this.worldToCell(x, z);
-    return this.isOpenCell(c.cx, c.cz);
+    if (!this.inBounds(c.cx, c.cz)) return false;
+    if (this.open[c.cz * this.map!.size.w + c.cx] !== 1) return false;
+    const halfSet = this.blockedHalfTiles.get(this.key(c.cx, c.cz));
+    if (halfSet && halfSet.size > 0) {
+      const u = (x - c.cx * CELL) / CELL;
+      const v = (z - c.cz * CELL) / CELL;
+      for (const orientation of halfSet) {
+        if (isPointInHalfTile(u, v, orientation)) return false;
+      }
+    }
+    return true;
   }
   /** CONTRACTS.md: world coords, cell center test. */
   isBlocked(x: number, z: number) { return !this.isOpenWorld(x, z); }
 
-  // ── movement collision: circle (r ft) vs wall AABBs — resolve push-out.
+  // ── movement collision: circle (r ft) vs wall AABBs and half-tile right triangles — resolve push-out.
   // Only boxes that occupy standing height (0–6ft) or non-decorative boxes
   // block movement: braziers/coffins block legs, hanging lanterns and door
   // frames (decor) never snag a walking token.
@@ -1285,6 +1913,64 @@ export class TileGrid {
           const m = Math.min(l, rr, t, b);
           if (m === l) x = c.x1 - r; else if (m === rr) x = c.x2 + r;
           else if (m === t) z = c.z1 - r; else z = c.z2 + r;
+        }
+      }
+    }
+
+    if (this.blockedHalfTiles.size > 0 && this.map) {
+      const minCx = Math.max(0, Math.floor((x - r - 1) / CELL));
+      const maxCx = Math.min(this.map.size.w - 1, Math.floor((x + r + 1) / CELL));
+      const minCz = Math.max(0, Math.floor((z - r - 1) / CELL));
+      const maxCz = Math.min(this.map.size.h - 1, Math.floor((z + r + 1) / CELL));
+
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        for (let cx = minCx; cx <= maxCx; cx++) {
+          const halfSet = this.blockedHalfTiles.get(this.key(cx, cz));
+          if (!halfSet || halfSet.size === 0) continue;
+          const x0 = cx * CELL, z0 = cz * CELL;
+          const x1 = (cx + 1) * CELL, z1 = (cz + 1) * CELL;
+
+          for (const orientation of halfSet) {
+            let ax = 0, az = 0, bx = 0, bz = 0, nx0 = 0, nz0 = 0;
+            if (orientation === 'nw') {
+              ax = x0; az = z1; bx = x1; bz = z0;
+              nx0 = 0.70710678; nz0 = 0.70710678;
+            } else if (orientation === 'se') {
+              ax = x0; az = z1; bx = x1; bz = z0;
+              nx0 = -0.70710678; nz0 = -0.70710678;
+            } else if (orientation === 'ne') {
+              ax = x0; az = z0; bx = x1; bz = z1;
+              nx0 = -0.70710678; nz0 = 0.70710678;
+            } else if (orientation === 'sw') {
+              ax = x0; az = z0; bx = x1; bz = z1;
+              nx0 = 0.70710678; nz0 = -0.70710678;
+            }
+
+            const abx = bx - ax, abz = bz - az;
+            const abLenSq = abx * abx + abz * abz || 1;
+            const apx = x - ax, apz = z - az;
+            const t = Math.max(0, Math.min(1, (apx * abx + apz * abz) / abLenSq));
+            const px = ax + t * abx, pz = az + t * abz;
+
+            const u = (x - x0) / CELL, v = (z - z0) / CELL;
+            const inside = isPointInHalfTile(u, v, orientation);
+            const dx = x - px, dz = z - pz;
+            const d = Math.hypot(dx, dz);
+
+            if (inside) {
+              x = px + nx0 * r;
+              z = pz + nz0 * r;
+            } else if (d < r) {
+              const overlap = r - d;
+              if (d > 0.0001) {
+                x += (dx / d) * overlap;
+                z += (dz / d) * overlap;
+              } else {
+                x += nx0 * overlap;
+                z += nz0 * overlap;
+              }
+            }
+          }
         }
       }
     }

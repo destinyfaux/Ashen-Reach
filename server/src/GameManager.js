@@ -58,6 +58,7 @@ export class GameManager {
     this.map = null;                   // current MapDef
     this.monsterAwareness = new Map();  // private encounter state; never sent in player snapshots
     this.wallCells = new Set();        // "cx,cz" of blocked cells for move validation
+    this.halfWallCells = new Map();    // "cx,cz" -> Set of blocked orientations ('nw'|'ne'|'se'|'sw')
     this.lastMoveAt = new Map();       // tokenId -> ms (movement rate guard)
     this.net = null;                   // set by ws.js: { sendToUser, broadcast }
     this.loadMapRegistry();
@@ -200,11 +201,57 @@ export class GameManager {
     return cells;
   }
 
+  normalizeHalfTile(orientation) {
+    if (!orientation) return 'nw';
+    const o = String(orientation).toLowerCase();
+    if (o === 'tl' || o === 'top_left' || o === 'nw' || o === 'northwest') return 'nw';
+    if (o === 'tr' || o === 'top_right' || o === 'ne' || o === 'northeast') return 'ne';
+    if (o === 'br' || o === 'bottom_right' || o === 'se' || o === 'southeast') return 'se';
+    if (o === 'bl' || o === 'bottom_left' || o === 'sw' || o === 'southwest') return 'sw';
+    return 'nw';
+  }
+
+  isPointInHalfTile(u, v, orientation) {
+    const norm = this.normalizeHalfTile(orientation);
+    if (norm === 'nw') return u + v <= 1.0;
+    if (norm === 'se') return u + v >= 1.0;
+    if (norm === 'ne') return u >= v;
+    if (norm === 'sw') return u <= v;
+    return true;
+  }
+
   rebuildWallCells() {
-    this.wallCells = new Set([
-      ...(this.map?.cells?.wall || []),
-      ...(this.map?.cells?.water || []),
-    ].map(([cx, cz]) => cx + ',' + cz));
+    this.wallCells = new Set();
+    this.halfWallCells = new Map();
+
+    const addCell = (cell) => {
+      const cx = cell[0], cz = cell[1], orientation = cell[2];
+      const key = cx + ',' + cz;
+      if (orientation) {
+        let set = this.halfWallCells.get(key);
+        if (!set) { set = new Set(); this.halfWallCells.set(key, set); }
+        set.add(this.normalizeHalfTile(orientation));
+      } else {
+        this.wallCells.add(key);
+      }
+    };
+
+    for (const cell of this.map?.cells?.wall || []) addCell(cell);
+    for (const cell of this.map?.cells?.water || []) addCell(cell);
+    for (const h of this.map?.cells?.halfTiles || []) {
+      if (h.type === 'water' || h.type === 'wall') {
+        const key = h.x + ',' + h.z;
+        let set = this.halfWallCells.get(key);
+        if (!set) { set = new Set(); this.halfWallCells.set(key, set); }
+        set.add(this.normalizeHalfTile(h.orientation));
+      }
+    }
+    for (const [key, set] of this.halfWallCells) {
+      if ((set.has('nw') && set.has('se')) || (set.has('ne') && set.has('sw'))) {
+        this.wallCells.add(key);
+      }
+    }
+
     for (const door of this.state.doors || []) {
       if (door.secret && !door.revealed) {
         for (const [cx, cz] of this.secretDoorCells(this.map.walls[door.wallIndex])) {
@@ -212,6 +259,25 @@ export class GameManager {
         }
       }
     }
+  }
+
+  isBlockedAt(x, z) {
+    if (!this.map || x < 0 || z < 0 ||
+      x >= this.map.size.w * CELL_FT || z >= this.map.size.h * CELL_FT) {
+      return true;
+    }
+    const cx = Math.floor(x / CELL_FT), cz = Math.floor(z / CELL_FT);
+    const key = cx + ',' + cz;
+    if (this.wallCells.has(key)) return true;
+    const half = this.halfWallCells?.get(key);
+    if (half && half.size > 0) {
+      const u = (x - cx * CELL_FT) / CELL_FT;
+      const v = (z - cz * CELL_FT) / CELL_FT;
+      for (const orientation of half) {
+        if (this.isPointInHalfTile(u, v, orientation)) return true;
+      }
+    }
+    return false;
   }
 
   doorDistance(token, wall) {
@@ -707,9 +773,8 @@ export class GameManager {
     const x = nx;
     const z = nz;
 
-    // wall validation — reject moves whose destination cell is solid
-    const cx = Math.floor(x / CELL_FT), cz = Math.floor(z / CELL_FT);
-    if (this.wallCells.has(cx + ',' + cz)) return reject('blocked');
+    // wall/water validation — reject moves whose destination is solid
+    if (this.isBlockedAt(x, z)) return reject('blocked');
     if (this.overlapsLandscapeProp(x, z)) return reject('blocked');
     if (this.crossesClosedDoor(token, { x, z })) return reject('blocked');
 
