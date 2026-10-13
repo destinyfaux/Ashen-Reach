@@ -181,7 +181,13 @@ export class Engine {
   private tick(dt: number) {
     this.timeAccum += dt;
     // advance world clock (server env is authoritative but we interpolate locally)
-    if (this.lastEnv.mode === 'cycle') this.lastEnv.time = (this.lastEnv.time + dt * 1.2) % 1440;
+    if (this.lastEnv.mode === 'cycle') {
+      this.lastEnv.time = (this.lastEnv.time + dt * 1.2) % 1440;
+      const currentMin = Math.floor(this.lastEnv.time);
+      if (currentMin !== useGame.getState().dayTime) {
+        useGame.setState({ dayTime: currentMin });
+      }
+    }
 
     this.world.update(dt, this.lastEnv);
     this.grid.update(dt);

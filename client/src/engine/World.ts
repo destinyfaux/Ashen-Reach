@@ -1205,6 +1205,14 @@ export class World {
     skyUniforms.uCloudDensity.value = this.isCrypt ? 0 : cloudDensity;
     skyUniforms.uWindOffset.value.copy(this.cloudOffset);
 
+    this.eng.grid.syncWaterEnv({
+      nightFactor: this.isCrypt ? 1.0 : atmo.nightFactor,
+      zenith: this.isCrypt ? 0x060a0a : atmo.zenith,
+      horizon: this.isCrypt ? 0x060a0a : atmo.horizon,
+      windOffset: this.cloudOffset,
+      cloudCoverage,
+    });
+
     if (this.isCrypt) {
       bg?.setHex(0x060a0a);
       fogC.color.setHex(0x070c0c);

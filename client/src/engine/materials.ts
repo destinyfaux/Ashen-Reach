@@ -490,6 +490,169 @@ function buildAshGround(kind: 'ash_dirt' | 'ash_grass', variant: number): Textur
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (h) tree bark — deep vertical furrows, weathered ridges, lichen & moss flecks.
+//     v0: rugged dark oak/ash; v1: pine/conifer reddish-brown plates;
+//     v2: pale/dead charred; v3: white paper birch with lenticels;
+//     v4: gnarled mossy river willow
+// ─────────────────────────────────────────────────────────────────────────────
+function buildBark(variant = 0): TextureSet {
+  const S = 512;
+  const cm = mkCanvas(S), cb = mkCanvas(S);
+  const g = cm.g, b = cb.g;
+  const r = rng(0xba4c + variant * 37);
+
+  // Base tones
+  const baseTones = variant === 1
+    ? [68, 48, 38]   // pine reddish-amber
+    : variant === 2
+      ? [50, 48, 46] // dead / charred weathered grey
+      : variant === 3
+        ? [224, 226, 222] // silver / white paper birch
+        : variant === 4
+          ? [60, 55, 45]   // gnarled olive-brown willow
+          : [56, 44, 34];  // rugged dark oak / hardwood
+  g.fillStyle = `rgb(${baseTones[0]},${baseTones[1]},${baseTones[2]})`;
+  g.fillRect(0, 0, S, S);
+  b.fillStyle = variant === 3 ? 'rgb(170,170,170)' : 'rgb(110,110,110)';
+  b.fillRect(0, 0, S, S);
+
+  // Vertical bark plates / ridges
+  if (variant !== 3) {
+    const numFurrows = variant === 1 ? 16 : variant === 4 ? 18 : 22;
+    const furrowWidth = S / numFurrows;
+    for (let f = 0; f < numFurrows; f++) {
+      const fx = f * furrowWidth;
+      const plateTone = 0.8 + r() * 0.45;
+      const col = [
+        Math.min(255, Math.round(baseTones[0] * plateTone)),
+        Math.min(255, Math.round(baseTones[1] * plateTone)),
+        Math.min(255, Math.round(baseTones[2] * plateTone)),
+      ];
+      g.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+      g.fillRect(fx + 2, 0, furrowWidth - 4, S);
+
+      // Deep shadowed furrows between plates
+      g.fillStyle = 'rgba(12, 9, 7, 0.72)';
+      g.fillRect(fx - 2, 0, 4, S);
+      b.fillStyle = 'rgb(35, 35, 35)';
+      b.fillRect(fx - 2, 0, 4, S);
+
+      // Ridge highlights on plate center
+      b.fillStyle = `rgb(${Math.round(130 + plateTone * 60)},${Math.round(130 + plateTone * 60)},${Math.round(130 + plateTone * 60)})`;
+      b.fillRect(fx + 3, 0, furrowWidth - 6, S);
+    }
+  } else {
+    // Birch: faint paper peeling bands and subtle vertical shading
+    for (let i = 0; i < 12; i++) {
+      const bx = r() * S;
+      const bw = 20 + r() * 50;
+      g.fillStyle = `rgba(205, 208, 202, ${0.15 + r() * 0.2})`;
+      g.fillRect(bx, 0, bw, S);
+    }
+  }
+
+  // Wavy vertical grain fibers & fissures across the trunk
+  const grainLines = variant === 3 ? 30 : 90;
+  for (let i = 0; i < grainLines; i++) {
+    const gx = r() * S;
+    const w = 1.2 + r() * 3.2;
+    const dark = r() < 0.7;
+    const alpha = variant === 3 ? (0.06 + r() * 0.1) : (0.12 + r() * 0.22);
+    const color = variant === 3
+      ? `rgba(50,45,40,${alpha})`
+      : dark ? `rgba(10,8,6,${alpha})` : `rgba(120,95,70,${alpha * 0.8})`;
+    wrap9(g, S, gx, 0, (ctx) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      let cx = 0;
+      ctx.moveTo(cx, 0);
+      for (let y = 0; y <= S; y += 32) {
+        cx += (r() - 0.5) * 5.5;
+        ctx.lineTo(cx, y);
+      }
+      ctx.stroke();
+    });
+
+    wrap9(b, S, gx, 0, (ctx) => {
+      ctx.strokeStyle = dark ? 'rgba(20,20,20,0.5)' : 'rgba(235,235,235,0.45)';
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      let cx = 0;
+      ctx.moveTo(cx, 0);
+      for (let y = 0; y <= S; y += 32) {
+        cx += (r() - 0.5) * 5.5;
+        ctx.lineTo(cx, y);
+      }
+      ctx.stroke();
+    });
+  }
+
+  // Horizontal fissures (lenticels & weather cracks)
+  // For birch (v3), horizontal dark lenticels are the defining visual hallmark!
+  const numLenticels = variant === 3 ? 110 : 45;
+  for (let i = 0; i < numLenticels; i++) {
+    const cx = r() * S;
+    const cy = r() * S;
+    const len = variant === 3 ? (10 + r() * 36) : (8 + r() * 24);
+    const lw = variant === 3 ? (1.8 + r() * 3.0) : (1.6 + r() * 1.5);
+    const lenticelColor = variant === 3 ? 'rgba(24, 20, 18, 0.88)' : 'rgba(8,6,5,0.65)';
+    wrap9(g, S, cx, cy, (ctx) => {
+      ctx.strokeStyle = lenticelColor;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.moveTo(-len * 0.5, 0);
+      ctx.lineTo(len * 0.5, (r() - 0.5) * 2);
+      ctx.stroke();
+
+      // For birch, occasional dark triangular node scars
+      if (variant === 3 && r() < 0.12) {
+        ctx.fillStyle = 'rgba(22, 18, 16, 0.9)';
+        ctx.beginPath();
+        ctx.moveTo(-len * 0.3, 0);
+        ctx.lineTo(len * 0.3, 0);
+        ctx.lineTo(0, -5 - r() * 6);
+        ctx.closePath();
+        ctx.fill();
+      }
+    });
+    wrap9(b, S, cx, cy, (ctx) => {
+      ctx.strokeStyle = 'rgba(20,20,20,0.75)';
+      ctx.lineWidth = lw + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(-len * 0.5, 0);
+      ctx.lineTo(len * 0.5, 0);
+      ctx.stroke();
+    });
+  }
+
+  // Lichen & moss clusters on the bark
+  if (variant !== 2) {
+    const mossClusters = variant === 4 ? 42 : variant === 3 ? 14 : 28;
+    for (let i = 0; i < mossClusters; i++) {
+      const mx = r() * S, my = r() * S, mr = 4 + r() * 14;
+      const isLichen = variant === 3 ? true : r() < 0.45;
+      const mossColor = isLichen
+        ? `rgba(164, 178, 142, ${0.28 + r() * 0.3})`
+        : variant === 4
+          ? `rgba(45, 78, 32, ${0.45 + r() * 0.35})` // lush wetland moss
+          : `rgba(62, 84, 46, ${0.32 + r() * 0.35})`;
+      wrap9(g, S, mx, my, (ctx) => {
+        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, mr);
+        grad.addColorStop(0, mossColor);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(0, 0, mr, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+  }
+
+  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API — everything cached.
 // ─────────────────────────────────────────────────────────────────────────────
 const texCache = new Map<string, TextureSet>();
@@ -504,6 +667,7 @@ const BUILDERS: Record<string, (v: number) => TextureSet> = {
   wood: () => buildWood(),
   iron: buildIron,
   bone: () => buildBone(),
+  bark: (v) => buildBark(v),
 };
 
 export interface AreaTileSet {
@@ -588,6 +752,11 @@ export function getMaterial(kind: string, variant = 0): THREE.Material {
       metalness = variant === 0 ? 0.58 : 0.82;
       bumpScale = 0.3;
     } else if (kind === 'bone') { roughness = 0.9; metalness = 0.02; bumpScale = 0.3; }
+    else if (kind === 'bark') {
+      roughness = variant === 3 ? 0.92 : 0.97;
+      metalness = 0.01;
+      bumpScale = variant === 3 ? 0.38 : variant === 4 ? 0.72 : 0.65;
+    }
     m = new THREE.MeshStandardMaterial({
       map: set.map, bumpMap: set.bump, bumpScale, roughness, metalness
     });

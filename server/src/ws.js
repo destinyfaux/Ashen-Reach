@@ -183,7 +183,7 @@ export function attachWs(server, gm) {
         if (op === 'weather' || op === 'daynight') {
           broadcast('state:patch', {
             version: gm.state.version,
-            dayNight: gm.state.dayNight, weather: gm.state.weather
+            dayNight: gm.getDayNight ? gm.getDayNight() : gm.state.dayNight, weather: gm.state.weather
           });
         } else if (op === 'map') {
           broadcast('state:patch', {

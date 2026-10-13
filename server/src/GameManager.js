@@ -51,6 +51,8 @@ export class GameManager {
       chat: [],
       initiative: null // { order:[ids], turnIdx, round, movement } when combat is on (T2-b)
     };
+    this.dayNightBaseTime = this.state.dayNight.time;
+    this.dayNightBaseTimestamp = this.session.startedAt;
     this.maps = new Map();             // id -> MapDef
     this.mapRuntime = new Map();       // per-map doors, creatures, and party positions for this session
     this.exitReturnMapId = startMapId;
@@ -840,6 +842,8 @@ export class GameManager {
           mode: p.mode === 'fixed' ? 'fixed' : 'cycle',
           time: Math.max(0, Math.min(1440, Number(p.time) || 0))
         };
+        this.dayNightBaseTime = this.state.dayNight.time;
+        this.dayNightBaseTimestamp = Date.now();
         break;
       case 'map': {
         if (!this.setMap(String(p.id))) return { error: 'map_not_found' };
@@ -906,13 +910,23 @@ export class GameManager {
     return { ok: true };
   }
 
+  getDayNight() {
+    if (this.state.dayNight.mode !== 'cycle') return this.state.dayNight;
+    const elapsedMinutes = ((Date.now() - this.dayNightBaseTimestamp) / 1000) * 1.2;
+    const time = (this.dayNightBaseTime + elapsedMinutes) % 1440;
+    return {
+      ...this.state.dayNight,
+      time: Math.floor(time)
+    };
+  }
+
   getPublicState(userId) {
     return {
       version: this.state.version,
       sessionId: this.session.id,
       mapId: this.state.mapId,
       mapName: this.state.mapName,
-      dayNight: this.state.dayNight,
+      dayNight: this.getDayNight(),
       weather: this.state.weather,
       players: [...new Map(this.state.players.map((p) => [p.id, p])).values()],
       tokens: this.tokensForUser(userId),

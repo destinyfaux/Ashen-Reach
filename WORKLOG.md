@@ -1,5 +1,25 @@
 # ASHENREACH Worklog
 
+## Milestone: Weeping willow canopy redesign, dead tree limb connectivity fix, hill rock normal alignment, and sunken trees on slopes
+
+- **Weeping Willow Canopy Redesign**: Replaced the awkward vertical cylindrical drapes with a lush, authentic weeping willow canopy:
+  - 5 wide arching limbs sweeping outwards in an umbrella fountain structure with secondary downward switch boughs.
+  - 3 overarching crown umbrella domes forming the expansive canopy top.
+  - 15 cascading organic foliage masses (soft dodecahedron clusters stretched vertically in 3 descending tiers per limb) draping down towards the water and ground in painterly willow sage and moss green tones.
+- **Dead Tree Limb Connectivity Fix**:
+  - Eliminated disconnected / floating branches on dead snags: transformed local limb origin and direction vectors by the trunk's actual orientation quaternion (`trunkQuat = dummy.quaternion.clone()`) and base position.
+  - Added 4 splinter fork stubs emerging directly from the fractured dead boughs, ensuring every branch is physically and mathematically embedded in the wood core regardless of trunk tilt or lean.
+- **Slope Anchoring & Anti-Floating Trees**:
+  - Sunk all trees 0.85 * scale into the terrain, and extended the trunk cylinder base downward (`trunkGeom.translate(0, trunkHeight / 2 - 1.2, 0)`) so the flared base reaches over 2 units underground.
+  - Prevents trees on hills, ridges, and slopes from ever having their bases hover above ground.
+  - Preserved strict vertical growth for trees and grass (`quaternion = (0, 0, 0, 1)`).
+- **Rock Hillside Normal Alignment**:
+  - Implemented `terrainNormalAt(x, z)` in `TileGrid.ts` to compute exact terrain surface normals on slopes.
+  - Oriented all landscape boulders, rocks, scree, and clutter pebbles to align their Up vector `(0, 1, 0)` with the terrain surface normal plus local yaw, embedding them firmly into hillsides so they sit naturally on slopes without jutting out or hovering.
+- **PCG Tree Scale Calibration**:
+  - Adjusted tree scale range in `server/src/maps/worldGenerator.mjs` to 0.8–3.0 max (down from 4.0), preventing oversized trees while preserving towering grand forest scale.
+- **Verification**: `compile_applet` passed, `lint_applet` clean (0 errors), `node --test` generator tests passed (10/10), `npm test` passed (94/94), `npm run smoke` passed (28/28).
+
 ## Milestone: River, lake, and pond terrain deformation
 
 - **Feature**: Water bodies deform the terrain heightfield underneath into natural basins and channels.

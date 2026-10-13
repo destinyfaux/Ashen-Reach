@@ -738,3 +738,28 @@ test('GameManager movement validates half-tiles: token can walk on dry half of h
   assert.equal(wetMove.reason, 'blocked', 'rejection reason must be blocked');
 });
 
+test('game time advances along side world time in cycle mode and responds to DM command', () => {
+  const gm = new GameManager({ startMapId: 'ashen_reach' });
+  const initial = gm.getDayNight();
+  assert.equal(initial.mode, 'cycle');
+  assert.equal(initial.time, 600); // 10:00
+
+  // Simulate 10 seconds of elapsed real time (10s * 1.2 min/s = 12 game minutes)
+  gm.dayNightBaseTimestamp = Date.now() - 10_000;
+  const advanced = gm.getDayNight();
+  assert.equal(advanced.time, 612);
+
+  const publicState = gm.getPublicState('user_1');
+  assert.equal(publicState.dayNight.time, 612);
+
+  // DM updates day/night time and mode
+  gm.dmCommand({ op: 'daynight', mode: 'fixed', time: 720 });
+  const fixed = gm.getDayNight();
+  assert.equal(fixed.mode, 'fixed');
+  assert.equal(fixed.time, 720);
+
+  // Fixed mode does not drift with elapsed time
+  gm.dayNightBaseTimestamp = Date.now() - 50_000;
+  assert.equal(gm.getDayNight().time, 720);
+});
+

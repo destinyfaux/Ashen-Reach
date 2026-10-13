@@ -87,7 +87,7 @@ test('overworld clusters carry explicit biome rules and town services', () => {
     assert.ok(map.props.some((prop) => prop.type === 'building' && prop.variant === variant));
   }
   assert.ok(map.props.filter((prop) => prop.type === 'tree').every((prop) =>
-    prop.scale >= 2.05 && prop.scale <= 3.2));
+    prop.scale >= 0.8 && prop.scale <= 3.01));
   const boulderShapes = new Set(map.props.filter((prop) => prop.type === 'boulder').map((prop) => prop.shape));
   assert.ok(boulderShapes.size >= 4);
 });

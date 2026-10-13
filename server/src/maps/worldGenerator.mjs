@@ -10,7 +10,7 @@ const BIOMES = [
 
 export const WORLD_PCG_RULES = {
   forest: { clusters: ['oak_grove', 'pine_stand'], undergrowth: ['fern', 'twig', 'moss_rock'] },
-  meadow: { clusters: ['grass_patch', 'wildflower_patch'], undergrowth: ['grass', 'small_rock'] },
+  meadow: { clusters: ['grass_patch', 'wildflower_patch', 'willow_stand'], undergrowth: ['grass', 'small_rock'] },
   snow_forest: { clusters: ['snow_pine_grove'], undergrowth: ['snow_drift', 'frost_rock'] },
   snowfield: { clusters: ['snow_drift'], undergrowth: ['frost_rock'] },
   deadlands: { clusters: ['charred_stand'], undergrowth: ['ash_stone', 'dead_brush'] },
@@ -454,11 +454,15 @@ function makeWorld(seed) {
       if (Math.hypot(px - townCenter.x, pz - townCenter.z) < 13) continue;
       if (waterCells.has(Math.floor(pz) * WIDTH + Math.floor(px)) ||
           roadCells.has(Math.floor(pz) * WIDTH + Math.floor(px))) continue;
+      const isNearWater = Math.hypot(px - 18, pz - 26) < 14 || Math.hypot(px - 32, pz - 70) < 14 || Math.hypot(px - 28, pz - 43) < 14 || Math.hypot(px - 75, pz - 62) < 14;
       const treeVariant = biome === 'deadlands' ? 'dead'
         : biome === 'snow_forest' ? 'snowpine'
-          : biome === 'mountains' ? 'pine'
-            : ['oak', 'pine', 'ash'][Math.floor(rng() * 3)];
-      const scale = type === 'tree' ? 2.05 + rng() * 1.15
+          : biome === 'mountains' ? (rng() < 0.25 ? 'birch' : 'pine')
+            : biome === 'meadow' ? (rng() < 0.65 ? 'willow' : 'ash')
+              : (rule === 'willow-stand' || isNearWater)
+                ? (rng() < 0.6 ? 'willow' : 'oak')
+                : ['oak', 'pine', 'ash', 'birch'][Math.floor(rng() * 4)];
+      const scale = type === 'tree' ? 0.8 + rng() * 2.2
         : type === 'boulder' ? 1.25 + rng() * 1.75
           : 0.7 + rng() * 1.8;
       const shape = ['angular', 'slab', 'spire', 'ridge', 'split'][Math.floor(rng() * 5)];
@@ -473,7 +477,8 @@ function makeWorld(seed) {
   };
 
   makeCluster('western-oak-groves', 'forest', 20, 23, 18, 'grove-with-undergrowth', 78, ['tree', 'tree', 'boulder', 'fern', 'twig', 'rock']);
-  makeCluster('western-meadow-patches', 'meadow', 27, 66, 17, 'grass-and-wildflowers', 72, ['grass', 'grass', 'wildflower', 'rock', 'boulder']);
+  makeCluster('western-meadow-patches', 'meadow', 27, 66, 17, 'grass-and-wildflowers', 72, ['wildflower', 'grass', 'grass', 'wildflower', 'grass', 'rock', 'wildflower', 'grass', 'tree']);
+  makeCluster('river-willow-stand', 'meadow', 34, 52, 14, 'willow-stand', 36, ['wildflower', 'grass', 'grass', 'rock', 'wildflower', 'grass', 'tree']);
   makeCluster('northern-snow-pines', 'snow_forest', 81, 17, 18, 'snow-pine-stand', 70, ['tree', 'tree', 'boulder', 'snow_drift', 'rock']);
   makeCluster('eastern-snowfield', 'snowfield', 100, 49, 15, 'drifts-and-frost-rocks', 56, ['snow_drift', 'snow_drift', 'rock', 'boulder']);
   makeCluster('southern-deadlands', 'deadlands', 94, 78, 17, 'charred-sparse-grove', 62, ['tree', 'tree', 'dead_brush', 'rock', 'boulder']);
