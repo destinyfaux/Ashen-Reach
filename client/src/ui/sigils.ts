@@ -71,16 +71,17 @@ export function sigilSvg(archetype: string, cls = ''): string {
   return svg(s ? s.path : SIGILS.warden.path, cls);
 }
 
-export function weatherIcon(type: string): string {
+export function weatherIcon(type: string, cls = 'ic ic-sm'): string {
   switch (type) {
-    case 'rain': return icon('rain');
-    case 'storm': return icon('storm');
-    case 'fog': return icon('fog');
-    default: return icon('sparkle');
+    case 'rain': return icon('rain', cls);
+    case 'storm': return icon('storm', cls);
+    case 'fog': return icon('fog', cls);
+    default: return icon('sparkle', cls);
   }
 }
 
-export function clockIcon(dayTime: number): string {
-  const h = Math.floor((dayTime / 60) % 24);
-  return (h >= 7 && h < 19) ? icon('sun') : icon('moon');
+export function clockIcon(dayTime: number, cls = 'ic ic-sm'): string {
+  const norm = Number.isFinite(dayTime) ? ((dayTime % 1440) + 1440) % 1440 : 21 * 60;
+  const h = Math.floor(norm / 60);
+  return (h >= 6 && h < 19) ? icon('sun', cls) : icon('moon', cls);
 }

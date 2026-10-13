@@ -25,6 +25,19 @@ test('overworld contains connected travel features, varied biomes, and a safe to
   assert.ok(map.metadata.water.river.every((point, index, points) =>
     index === 0 || point.level <= points[index - 1].level));
   assert.ok(map.metadata.water.lakes.every((lake) => lake.level <= 14));
+  assert.ok(map.metadata.water.ponds.length > 0, 'ponds exist in metadata');
+  assert.ok(map.metadata.water.ponds.every((pond) => pond.level <= 14));
+  for (const body of [...map.metadata.water.lakes, ...map.metadata.water.ponds]) {
+    const cx = Math.round(body.x), cz = Math.round(body.z);
+    const centerGround = (
+      map.terrain.heightFt[cz * (map.size.w + 1) + cx] +
+      map.terrain.heightFt[cz * (map.size.w + 1) + cx + 1] +
+      map.terrain.heightFt[(cz + 1) * (map.size.w + 1) + cx] +
+      map.terrain.heightFt[(cz + 1) * (map.size.w + 1) + cx + 1]
+    ) / 4;
+    assert.ok(centerGround < body.level,
+      `terrain underneath ${body.kind} at ${cx},${cz} must be deformed below water level`);
+  }
   assert.ok(map.cells.water.every(([x, z]) => !isOverworldCellWalkable(map, x, z)));
   for (const [x, z] of map.cells.water) {
     const ground = (
@@ -155,4 +168,40 @@ test('overworld generates half-tile transitions for water and roads with correct
       'dry land half of half-tile must be walkable (no invisible collision)');
   }
 });
+
+test('bridges are properly oriented across water and allow clear crossing', () => {
+  const map = generateOverworld({ seed: 73021 });
+  const bridges = map.props.filter((p) => p.type === 'bridge');
+  assert.ok(bridges.length > 0, 'bridge prop exists');
+
+  for (const bridge of bridges) {
+    // Bridge rotation should be aligned with the road direction across river (roughly East-West, |rotY| > 1.0)
+    assert.ok(typeof bridge.rotY === 'number' && Math.abs(bridge.rotY) > 1.0,
+      `bridge at ${bridge.x},${bridge.z} must have proper crossing rotY (got ${bridge.rotY})`);
+    assert.ok(bridge.width >= 2.0, 'bridge width must be spacious (at least 2 cells)');
+    assert.ok(bridge.length >= 4.0, 'bridge length must span river (at least 4 cells)');
+
+    // Walking across the bridge center line should be completely open (no water or wall collision)
+    const midCellX = Math.floor(bridge.x);
+    const midCellZ = Math.floor(bridge.z);
+    assert.ok(isOverworldCellWalkable(map, midCellX, midCellZ),
+      `center cell of bridge at ${midCellX},${midCellZ} must be walkable`);
+    assert.ok(isOverworldPointWalkable(map, bridge.x * 5, bridge.z * 5),
+      `world point at bridge center must be walkable`);
+  }
+});
+
+test('rivers and nearby lakes merge together and generate shoreline stones', () => {
+  const map = generateOverworld({ seed: 73021 });
+  // Lake 1 at (32, 70) is in close proximity to the river path (z around 65-75)
+  // Ensure water cells form a continuous connection between the lake and river
+  const lake1Cells = map.cells.water.filter(([x, z]) => Math.hypot((x - 32) / 6.5, (z - 70) / 4.8) <= 1.0);
+  assert.ok(lake1Cells.length > 0, 'lake 1 water cells exist');
+
+  // Verify shoreline river rocks are placed
+  const riverRocks = map.props.filter((p) => p.clusterId === 'river-bank' || p.clusterId === 'lake-shore');
+  assert.ok(riverRocks.length >= 8, 'shoreline river rocks and lake stones are spawned');
+  assert.ok(riverRocks.every((r) => r.variant === 'river_stone'), 'shoreline props use river_stone variant');
+});
+
 

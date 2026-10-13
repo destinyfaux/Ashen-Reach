@@ -10,7 +10,7 @@ export interface LightDef { x: number; z: number; radiusFt: number; color: strin
 export interface PropDef {
   type: string; x: number; z: number; rotY?: number;
   scale?: number; variant?: string; shape?: string; label?: string; clusterId?: string;
-  width?: number; depth?: number;
+  width?: number; depth?: number; length?: number;
 }
 export interface WorldCluster {
   id: string; biome: string; rule: string; x: number; z: number;

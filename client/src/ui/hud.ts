@@ -28,8 +28,8 @@ export function mountHud(container: HTMLElement): () => void {
       <div class="hud-loc ornate">
         <span class="hud-loc-name" data-loc>—</span>
         <span class="hud-loc-meta">
-          <span class="hud-meta-bit" data-clock>${icon('moon', 'ic ic-sm')}</span>
-          <span class="hud-meta-bit" data-weather>${icon('sparkle', 'ic ic-sm')}</span>
+          <span class="hud-meta-bit" data-clock>${icon('moon', 'ic ic-sm')} <span class="clock-val"><b class="clock-time">--:--</b> <small class="clock-phase">· night</small></span></span>
+          <span class="hud-meta-bit" data-weather>${icon('sparkle', 'ic ic-sm')} <span>clear</span></span>
         </span>
          <span class="hud-conn" data-conn-badge data-conn="offline" title="Connection status"><span data-conn-label>offline</span><small data-ping>—</small></span>
       </div>

@@ -269,8 +269,10 @@ export class TileGrid {
     const wallAt = (x: number, z: number) =>
       x < 0 || z < 0 || x >= W || z >= H ? true : wallSet.has(this.key(x, z));
     const roadSet = new Set((map.cells.road || []).map(([x, z]) => this.key(x, z)));
+    const waterSet = new Set((map.cells.water || []).map(([x, z]) => this.key(x, z)));
     for (const h of map.cells.halfTiles || []) {
       if (h.type === 'road') roadSet.add(this.key(h.x, h.z));
+      if (h.type === 'water') waterSet.add(this.key(h.x, h.z));
     }
     const biomeTints: Record<string, [number, number, number]> = {
       forest: [0.78, 1.08, 0.78], meadow: [1.08, 1.12, 0.86],
@@ -300,6 +302,27 @@ export class TileGrid {
       const near = wallAt(x, z - 1) || wallAt(x, z + 1) || wallAt(x - 1, z) || wallAt(x + 1, z);
       if (near) shade *= 0.76;
       if (roadSet.has(this.key(x, z))) { tint[0] *= 1.12; tint[1] *= 0.94; tint[2] *= 0.78; }
+
+      // Shoreline bank: transition ground toward sand, gravel, and river silt near water
+      let minWaterDist = 99;
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (waterSet.has(this.key(x + dx, z + dz))) {
+            const d = Math.hypot(dx, dz);
+            if (d < minWaterDist) minWaterDist = d;
+          }
+        }
+      }
+      if (minWaterDist <= 2.2) {
+        const shoreBlend = Math.min(1, (2.2 - minWaterDist) / 1.4);
+        tint[0] = tint[0] * (1 - shoreBlend) + 0.70 * shoreBlend;
+        tint[1] = tint[1] * (1 - shoreBlend) + 0.63 * shoreBlend;
+        tint[2] = tint[2] * (1 - shoreBlend) + 0.51 * shoreBlend;
+        if (minWaterDist <= 0.9) {
+          shade *= 0.88;
+          shade += (hash2(x * 7 | 0, z * 7 | 0, 883) - 0.5) * 0.16;
+        }
+      }
       for (let c = 0; c < 4; c++) {
         const [cx, cz, u, v] = corners[c];
         const vi = (vertex + c) * 3, ti = (vertex + c) * 2;
@@ -878,7 +901,7 @@ export class TileGrid {
         natureRocks.set(shape, batch);
 
         if (p.type === 'boulder') {
-          const radius = Math.max(1, scale * 0.8);
+          const radius = Math.max(1.1, scale * 0.75);
           this.colliders.push({ x1: x - radius, z1: z - radius, x2: x + radius, z2: z + radius, yMin: 0, yMax: 5 });
         }
 
@@ -942,12 +965,41 @@ export class TileGrid {
           r: 0.88, g: 0.92, b: 0.98,
         });
       } else if (p.type === 'bridge') {
-        const bridge = new THREE.Mesh(new THREE.BoxGeometry(4.8, 0.35, 4.8), wood);
-        bridge.position.set(x, this.terrainHeightAt(x, z) + 0.45, z);
-        bridge.rotation.y = p.rotY || 0;
-        bridge.receiveShadow = true;
-        bridge.castShadow = true;
-        this.group.add(bridge);
+        const bg = new THREE.Group();
+        const bWidth = (p.width || 2.4) * CELL;
+        const bLength = (p.length || 5.0) * CELL;
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(bWidth, 0.45, bLength), wood);
+        deck.position.y = 0.22;
+        deck.receiveShadow = true;
+        deck.castShadow = true;
+        bg.add(deck);
+
+        // Side beam supports and handrails
+        const railMat = getMaterial('wood', 0);
+        const railOffset = bWidth / 2 - 0.45;
+        for (const side of [-railOffset, railOffset]) {
+          const stringer = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, bLength + 0.2), railMat);
+          stringer.position.set(side, 0.1, 0);
+          stringer.castShadow = true;
+          bg.add(stringer);
+
+          const handrail = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.25, bLength + 0.2), railMat);
+          handrail.position.set(side, 2.2, 0);
+          handrail.castShadow = true;
+          bg.add(handrail);
+
+          const postCount = 6;
+          for (let pi = 0; pi < postCount; pi++) {
+            const pz = -bLength / 2 + (bLength / (postCount - 1)) * pi;
+            const post = new THREE.Mesh(new THREE.BoxGeometry(0.35, 2.1, 0.35), railMat);
+            post.position.set(side, 1.1, pz);
+            post.castShadow = true;
+            bg.add(post);
+          }
+        }
+        bg.position.set(x, this.terrainHeightAt(x, z) + 0.18, z);
+        bg.rotation.y = p.rotY || 0;
+        this.group.add(bg);
       } else if (p.type === 'grave_marker') {
         const marker = new THREE.Group();
         const stone = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.5, 0.45), bone);
@@ -1646,7 +1698,7 @@ export class TileGrid {
         batch.push(tree);
         canopies.set(variant, batch);
       }
-      const radius = Math.max(1.1, scale * 0.85);
+      const radius = Math.max(0.65, scale * 0.35);
       this.colliders.push({ x1: x - radius, z1: z - radius, x2: x + radius, z2: z + radius, yMin: 0, yMax: 7 * scale });
     });
     trunk.instanceMatrix.needsUpdate = true;

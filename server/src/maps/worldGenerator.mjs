@@ -153,14 +153,16 @@ function makeWorld(seed) {
   const waterCells = new Set();
   const waterSurface = new Array(WIDTH * HEIGHT).fill(null);
   const lakeSpecs = [];
-  const addLake = (cx, cz, rx, rz, salt) => {
+  const pondSpecs = [];
+  const addWaterBody = (specs, kind, cx, cz, rx, rz, salt) => {
     const centerHeight = heights[Math.round(cz) * (WIDTH + 1) + Math.round(cx)];
-    const level = Math.max(3, Math.min(14, centerHeight - 1.5));
-    lakeSpecs.push({ x: cx, z: cz, rx, rz, level });
+    const drop = kind === 'pond' ? 1.2 : 1.5;
+    const level = Math.max(kind === 'pond' ? 2 : 3, Math.min(14, centerHeight - drop));
+    specs.push({ x: cx, z: cz, rx, rz, level, kind });
     for (let z = Math.floor(cz - rz - 1); z <= cz + rz + 1; z++) {
       for (let x = Math.floor(cx - rx - 1); x <= cx + rx + 1; x++) {
         const dx = (x - cx) / rx, dz = (z - cz) / rz;
-        const edge = 1 + (hash2(x, z, salt) - 0.5) * 0.24;
+        const edge = 1 + (hash2(x, z, salt) - 0.5) * (kind === 'pond' ? 0.2 : 0.24);
         const cell = z * WIDTH + x;
         const elevation = heights[z * (WIDTH + 1) + x];
         if (dx * dx + dz * dz < edge && x > 1 && z > 1 && x < WIDTH - 2 &&
@@ -171,88 +173,238 @@ function makeWorld(seed) {
       }
     }
   };
+  const addLake = (cx, cz, rx, rz, salt) => addWaterBody(lakeSpecs, 'lake', cx, cz, rx, rz, salt);
+  const addPond = (cx, cz, rx, rz, salt) => addWaterBody(pondSpecs, 'pond', cx, cz, rx, rz, salt);
+
   addLake(32, 70, 6.5, 4.8, 61);
   addLake(28, 43, 4.8, 6.2, 67);
+  addPond(18, 26, 3.0, 2.4, 73);
+  addPond(75, 62, 2.8, 2.4, 79);
 
-  const riverWaypoints = [
-    { x: 59, z: 12, level: 138 },
-    { x: 58, z: 28, level: 102 },
-    { x: 50, z: 45, level: 67 },
-    { x: 39, z: 63, level: 36 },
-    { x: 42, z: 82, level: 13 },
-    { x: 46, z: 95, level: 2.5 },
+  const rawRiverWaypoints = [
+    { x: 59, z: 12 },
+    { x: 58, z: 28 },
+    { x: 50, z: 45 },
+    { x: 39, z: 63 },
+    { x: 42, z: 82 },
+    { x: 46, z: 95 },
   ];
+
+
+  const startRiverLevel = Math.max(18, terrainAt(59, 12) - 1.5);
+  const endRiverLevel = 2.5;
   let previousRiverLevel = Infinity;
-  const riverPath = riverWaypoints.map((point) => {
-    const level = Math.max(0, Math.min(point.level, terrainAt(point.x, point.z) - 1.5, previousRiverLevel - 0.1));
+  const riverPath = rawRiverWaypoints.map((point, index) => {
+    const t = index / (rawRiverWaypoints.length - 1);
+    const gradLevel = startRiverLevel + (endRiverLevel - startRiverLevel) * t;
+    const ground = terrainAt(point.x, point.z);
+    const level = Math.max(endRiverLevel, Math.min(gradLevel, ground - 1.2, previousRiverLevel - 0.4));
     previousRiverLevel = level;
-    return { ...point, level };
+    return { ...point, level: Math.round(level * 4) / 4 };
   });
+
   const riverSamples = [];
-  let previousSampleLevel = Infinity;
   for (let segment = 0; segment < riverPath.length - 1; segment++) {
     const a = riverPath[segment], b = riverPath[segment + 1];
     const steps = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) * 3);
-    for (let i = 0; i <= steps; i++) {
+    for (let i = (segment === 0 ? 0 : 1); i <= steps; i++) {
       const t = i / steps;
       const x = a.x + (b.x - a.x) * t + Math.sin(t * Math.PI) * 0.8;
       const z = a.z + (b.z - a.z) * t;
-      const requestedLevel = a.level + (b.level - a.level) * t;
-      const level = Math.max(0, Math.min(requestedLevel, terrainAt(x, z) - 1.5, previousSampleLevel));
+      const level = Math.round((a.level + (b.level - a.level) * t) * 4) / 4;
       riverSamples.push({ x, z, level });
-      previousSampleLevel = level;
     }
   }
-  for (let i = 0; i < riverSamples.length; i += 3) {
+
+  // Proximity merging: if a river runs near a lake or pond, merge them with a
+  // natural connecting tributary/channel so there is no awkward dry gap.
+  for (const body of [...lakeSpecs, ...pondSpecs]) {
+    let nearestRiv = null;
+    let minD = Infinity;
+    for (const s of riverSamples) {
+      const d = Math.hypot((s.x - body.x) / body.rx, (s.z - body.z) / body.rz);
+      if (d < minD) { minD = d; nearestRiv = s; }
+    }
+    if (nearestRiv && minD < 1.95) {
+      // Body is within merging proximity: bridge them with a connecting water channel
+      const ang = Math.atan2((nearestRiv.z - body.z) / body.rz, (nearestRiv.x - body.x) / body.rx);
+      const edgeX = body.x + Math.cos(ang) * body.rx;
+      const edgeZ = body.z + Math.sin(ang) * body.rz;
+      const connSteps = Math.ceil(Math.hypot(nearestRiv.x - edgeX, nearestRiv.z - edgeZ) * 3);
+      // Synchronize water levels so the junction is smooth
+      body.level = Math.min(body.level, nearestRiv.level);
+      for (let ci = 0; ci <= connSteps; ci++) {
+        const ct = ci / (connSteps || 1);
+        const cx = edgeX + (nearestRiv.x - edgeX) * ct;
+        const cz = edgeZ + (nearestRiv.z - edgeZ) * ct;
+        const clevel = Math.round((body.level + (nearestRiv.level - body.level) * ct) * 4) / 4;
+        riverSamples.push({ x: cx, z: cz, level: clevel });
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const px = Math.round(cx) + dx, pz = Math.round(cz) + dz;
+          if (px > 1 && pz > 1 && px < WIDTH - 2 && pz < HEIGHT - 2) {
+            const cell = pz * WIDTH + px;
+            waterCells.add(cell);
+            waterSurface[cell] = clevel;
+          }
+        }
+      }
+    }
+  }
+
+  // Populate river water cells
+  for (let i = 0; i < riverSamples.length; i += 2) {
     const sample = riverSamples[i];
     const centerX = Math.round(sample.x), centerZ = Math.round(sample.z);
     for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
-      if (dx * dx + dz * dz > 3.2) continue;
+      if (dx * dx + dz * dz > 3.4) continue;
       const x = centerX + dx, z = centerZ + dz;
       if (x < 1 || z < 1 || x >= WIDTH - 1 || z >= HEIGHT - 1) continue;
       const cell = z * WIDTH + x;
-      if (terrainAt(x + 0.5, z + 0.5) <= sample.level + 1.5 &&
-          (!waterCells.has(cell) || sample.level < waterSurface[cell])) {
+      if (!waterCells.has(cell) || sample.level < waterSurface[cell]) {
         waterCells.add(cell);
         waterSurface[cell] = sample.level;
       }
     }
   }
 
+  // Deform terrain for water bodies and rivers: carves riverbed and ravine down mountain slopes
+  const allWaterBodies = [...lakeSpecs, ...pondSpecs];
   for (let z = 0; z <= HEIGHT; z++) for (let x = 0; x <= WIDTH; x++) {
     const at = z * (WIDTH + 1) + x;
-    for (const lake of lakeSpecs) {
-      const distance = Math.hypot((x - lake.x) / lake.rx, (z - lake.z) / lake.rz);
+    for (const body of allWaterBodies) {
+      const distance = Math.hypot((x - body.x) / body.rx, (z - body.z) / body.rz);
       if (distance > 1.45) continue;
-      const bed = lake.level - 0.65 + Math.max(0, distance - 0.8) * 2.2;
-      const shoreBlend = smooth(Math.max(0, Math.min(1, (1.5 - distance) / 0.55)));
-      heights[at] += (Math.min(heights[at], bed) - heights[at]) * shoreBlend;
+      const maxDepth = body.kind === 'pond' ? 1.5 : 2.2;
+      const bed = body.level - maxDepth + Math.pow(Math.min(1, distance), 2) * (maxDepth - 0.4);
+      const bank = body.level + 0.8 * Math.sin(Math.min(1, (distance - 1.0) / 0.45) * (Math.PI / 2));
+      const target = distance <= 1.0 ? bed : bank;
+      const shoreBlend = smooth(Math.max(0, Math.min(1, (1.45 - distance) / 0.45)));
+      heights[at] += (Math.min(heights[at], target) - heights[at]) * shoreBlend;
     }
+
     let nearest = Infinity, riverLevel = null;
     for (const sample of riverSamples) {
       const distance = Math.hypot(x - sample.x, z - sample.z);
       if (distance < nearest) { nearest = distance; riverLevel = sample.level; }
       if (nearest < 0.2) break;
     }
-    if (nearest < 8 && riverLevel !== null) {
-      const channelHeight = riverLevel - 1 + Math.max(0, nearest - 1.25);
-      const channelBlend = smooth(Math.max(0, Math.min(1, (8 - nearest) / 6.75)));
-      heights[at] += (Math.min(heights[at], channelHeight) - heights[at]) * channelBlend;
+    if (nearest < 7.0 && riverLevel !== null) {
+      const riverBed = riverLevel - 1.4 + Math.min(1, nearest / 1.5) * 0.4;
+      const riverBank = riverLevel + 0.35 + (nearest - 1.5) * 1.0;
+      const target = nearest <= 1.5 ? riverBed : riverBank;
+      const blend = smooth(Math.max(0, Math.min(1, (7.0 - nearest) / 5.5)));
+      heights[at] += (Math.min(heights[at], target) - heights[at]) * blend;
     }
   }
+
+  // Bridge generation: find the road crossing over the river, orient the bridge
+  // along the road perpendicular to the river, and level the roadway across banks.
   const bridgeCells = [];
+  const bridgeCellSet = new Set();
+  const rawCrossings = [];
   for (const cell of roadCells) {
-    if (!waterCells.has(cell)) continue;
-    const x = cell % WIDTH, z = Math.floor(cell / WIDTH);
-    waterCells.delete(cell);
-    waterSurface[cell] = null;
-    bridgeCells.push({ x: x + 0.5, z: z + 0.5, type: 'bridge', scale: 1 });
+    if (waterCells.has(cell)) {
+      rawCrossings.push({ x: cell % WIDTH, z: Math.floor(cell / WIDTH) });
+    }
   }
+
+  if (rawCrossings.length > 0) {
+    const avgX = rawCrossings.reduce((sum, c) => sum + c.x, 0) / rawCrossings.length;
+    const avgZ = rawCrossings.reduce((sum, c) => sum + c.z, 0) / rawCrossings.length;
+    // Road direction across river (west road from town 56,55 to 12,54)
+    const rdx = 12 - 56, rdz = 54 - 55;
+    const rotY = Math.atan2(rdx, rdz);
+    const bridgeWidth = 2.4;  // 12 ft roadway
+    const bridgeLength = 5.2; // 26 ft span
+    const bridgeSpanCells = Math.ceil(bridgeLength / 2) + 1;
+
+    // Clear water and mark solid roadway under the entire bridge footprint
+    for (let dz = -bridgeSpanCells; dz <= bridgeSpanCells; dz++) {
+      for (let dx = -bridgeSpanCells; dx <= bridgeSpanCells; dx++) {
+        const bx = Math.round(avgX) + dx, bz = Math.round(avgZ) + dz;
+        if (bx >= 0 && bx < WIDTH && bz >= 0 && bz < HEIGHT) {
+          // Check if within oriented bridge box
+          const localX = (bx - avgX) * Math.cos(-rotY) - (bz - avgZ) * Math.sin(-rotY);
+          const localZ = (bx - avgX) * Math.sin(-rotY) + (bz - avgZ) * Math.cos(-rotY);
+          if (Math.abs(localX) <= bridgeWidth / 2 + 0.6 && Math.abs(localZ) <= bridgeLength / 2 + 0.6) {
+            const bcell = bz * WIDTH + bx;
+            waterCells.delete(bcell);
+            waterSurface[bcell] = null;
+            bridgeCellSet.add(bcell);
+            roadCells.add(bcell);
+          }
+        }
+      }
+    }
+
+    // Smoothly level the terrain under the bridge road corridor across east and west approaches
+    const eastApproach = terrainAt(Math.round(avgX + 4), Math.round(avgZ));
+    const westApproach = terrainAt(Math.round(avgX - 4), Math.round(avgZ));
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const vx = Math.round(avgX) + dx, vz = Math.round(avgZ) + dz;
+        if (vx >= 0 && vx <= WIDTH && vz >= 0 && vz <= HEIGHT) {
+          const t = (dx + 3) / 6;
+          const roadHeight = westApproach + (eastApproach - westApproach) * t;
+          const at = vz * (WIDTH + 1) + vx;
+          heights[at] = Math.max(heights[at], roadHeight);
+        }
+      }
+    }
+
+    bridgeCells.push({
+      x: avgX + 0.5,
+      z: avgZ + 0.5,
+      type: 'bridge',
+      width: bridgeWidth,
+      length: bridgeLength,
+      rotY,
+      scale: 1.0,
+    });
+  }
+
+  // Ensure gradual grades across the entire terrain mesh (<= 4.2 ft step)
+  for (let iter = 0; iter < 8; iter++) {
+    for (let z = 0; z <= HEIGHT; z++) {
+      for (let x = 0; x <= WIDTH; x++) {
+        const at = z * (WIDTH + 1) + x;
+        if (x > 0) {
+          const left = at - 1;
+          const diff = heights[at] - heights[left];
+          if (diff > 4.2) heights[at] = heights[left] + 4.2;
+          else if (diff < -4.2) heights[left] = heights[at] + 4.2;
+        }
+        if (z > 0) {
+          const up = at - (WIDTH + 1);
+          const diff = heights[at] - heights[up];
+          if (diff > 4.2) heights[at] = heights[up] + 4.2;
+          else if (diff < -4.2) heights[up] = heights[at] + 4.2;
+        }
+      }
+    }
+  }
+
+  // Ensure center of lakes and ponds remain depressed below water level
+  for (const body of allWaterBodies) {
+    const cx = Math.round(body.x), cz = Math.round(body.z);
+    const maxCenterGround = body.level - 0.4;
+    for (let dz = 0; dz <= 1; dz++) for (let dx = 0; dx <= 1; dx++) {
+      const at = (cz + dz) * (WIDTH + 1) + (cx + dx);
+      if (heights[at] > maxCenterGround) heights[at] = maxCenterGround;
+    }
+  }
+
+  // Shoreline water surface safety clamp
   for (const cell of waterCells) {
     const x = cell % WIDTH, z = Math.floor(cell / WIDTH);
-    const ground = terrainAt(x + 0.5, z + 0.5);
-    if (waterSurface[cell] > ground + 2) {
-      waterSurface[cell] = ground - 0.18;
+    const ground = (
+      heights[z * (WIDTH + 1) + x] +
+      heights[z * (WIDTH + 1) + x + 1] +
+      heights[(z + 1) * (WIDTH + 1) + x] +
+      heights[(z + 1) * (WIDTH + 1) + x + 1]
+    ) / 4;
+    if (waterSurface[cell] > ground + 1.95) {
+      waterSurface[cell] = ground + 1.95;
     }
     const shoreline = [
       [-1, 0], [1, 0], [0, -1], [0, 1],
@@ -345,6 +497,48 @@ function makeWorld(seed) {
   clusters.push({ id: 'west-road-ruins', rule: 'collapsed-roadside-ruins', biome: 'ruins', x: 12, z: 54, radius: 8 });
   addProp('cave_entrance', 91.5, 34.5, { clusterId: 'eastern-caves' });
   clusters.push({ id: 'eastern-caves', rule: 'rocky-cave-mouth', biome: 'mountains', x: 91, z: 34, radius: 3 });
+
+  // Scatter shoreline rocks and rounded river pebbles along riverbanks and lake shores
+  for (let i = 0; i < riverSamples.length; i += 3) {
+    const s = riverSamples[i];
+    for (const side of [-1, 1]) {
+      if (hash2(i, side, 311) < 0.38) {
+        const dist = 1.9 + hash2(i, side, 419) * 1.2;
+        const rx = s.x + Math.cos(side * 1.57) * dist;
+        const rz = s.z + Math.sin(side * 1.57) * dist;
+        const cell = Math.floor(rz) * WIDTH + Math.floor(rx);
+        if (!waterCells.has(cell) && !roadCells.has(cell) && !bridgeCellSet.has(cell) &&
+            rx > 2 && rz > 2 && rx < WIDTH - 2 && rz < HEIGHT - 2) {
+          addProp('rock', rx, rz, {
+            scale: 0.45 + hash2(i, side, 521) * 0.5,
+            shape: 'slab',
+            variant: 'river_stone',
+            clusterId: 'river-bank',
+          });
+        }
+      }
+    }
+  }
+  for (const lake of lakeSpecs) {
+    const count = 10;
+    for (let i = 0; i < count; i++) {
+      const ang = (i / count) * Math.PI * 2 + hash2(i, 7, 613) * 0.4;
+      const dist = 1.08 + hash2(i, 11, 719) * 0.22;
+      const lx = lake.x + Math.cos(ang) * (lake.rx * dist);
+      const lz = lake.z + Math.sin(ang) * (lake.rz * dist);
+      const cell = Math.floor(lz) * WIDTH + Math.floor(lx);
+      if (!waterCells.has(cell) && !roadCells.has(cell) && !bridgeCellSet.has(cell) &&
+          lx > 2 && lz > 2 && lx < WIDTH - 2 && lz < HEIGHT - 2) {
+        addProp('rock', lx, lz, {
+          scale: 0.4 + hash2(i, 13, 821) * 0.5,
+          shape: 'slab',
+          variant: 'river_stone',
+          clusterId: 'lake-shore',
+        });
+      }
+    }
+  }
+
   props.push(...bridgeCells);
 
   const blocked = new Set([
@@ -359,11 +553,19 @@ function makeWorld(seed) {
   for (let z = 2; z < HEIGHT - 2; z++) {
     for (let x = 2; x < WIDTH - 2; x++) {
       const cell = z * WIDTH + x;
-      if (waterCells.has(cell) || roadCells.has(cell) || blocked.has(cell)) continue;
-      const nW = waterCells.has((z - 1) * WIDTH + x);
-      const sW = waterCells.has((z + 1) * WIDTH + x);
-      const wW = waterCells.has(z * WIDTH + x - 1);
-      const eW = waterCells.has(z * WIDTH + x + 1);
+      if (waterCells.has(cell) || roadCells.has(cell) || bridgeCellSet.has(cell) || blocked.has(cell)) continue;
+      // Guard bridge road approaches from water half-tiles
+      let nearBridge = false;
+      for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+        if (bridgeCellSet.has((z + dz) * WIDTH + (x + dx))) nearBridge = true;
+      }
+      if (nearBridge) continue;
+
+      const isWaterNeighbor = (k) => waterCells.has(k) && !bridgeCellSet.has(k);
+      const nW = isWaterNeighbor((z - 1) * WIDTH + x);
+      const sW = isWaterNeighbor((z + 1) * WIDTH + x);
+      const wW = isWaterNeighbor(z * WIDTH + x - 1);
+      const eW = isWaterNeighbor(z * WIDTH + x + 1);
 
       if (nW && wW) {
         halfTiles.push({ x, z, type: 'water', orientation: 'nw' });
@@ -439,7 +641,7 @@ function makeWorld(seed) {
     ],
     metadata: {
       townCenter,
-      water: { lakes: lakeSpecs, river: riverPath },
+      water: { lakes: lakeSpecs, ponds: pondSpecs, river: riverPath },
       roads: roadPaths.map((path) => path.map((point) => ({ ...point }))),
     },
   };
@@ -575,6 +777,9 @@ export function validateOverworld(map) {
   }
   if ((map?.metadata?.water?.lakes || []).some((lake) => lake.level > 20)) {
     errors.push('lakes must sit in lowland basins');
+  }
+  if ((map?.metadata?.water?.ponds || []).some((pond) => pond.level > 20)) {
+    errors.push('ponds must sit in lowland basins');
   }
   if (biomes?.cells?.length !== width * height) errors.push('biome field has the wrong size');
   if (new Set(biomes?.cells || []).size < 8) errors.push('world is missing biome variety');

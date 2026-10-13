@@ -199,16 +199,19 @@ export class Controls {
         const px = a.group.position.x, pz = a.group.position.z;
         // Resolve axes separately so a blocked diagonal doesn't cancel the
         // unblocked component and make movement catch at wall corners.
-        let [nx, nz] = this.eng.grid.resolve(px + dx * sp * dt, pz, 1.35);
-        const xOnly = { x: nx, z: nz };
-        if (!this.eng.grid.isOpenWorld(nx, nz) && this.eng.grid.isOpenWorld(px, pz)) {
-          nx = px; nz = pz;
+        let [nx, nz] = this.eng.grid.resolve(px + dx * sp * dt, pz, 1.2);
+        if (!this.eng.grid.isOpenWorld(nx, pz) && this.eng.grid.isOpenWorld(px, pz)) {
+          nx = px;
         }
-        [nx, nz] = this.eng.grid.resolve(nx, nz + dz * sp * dt, 1.35);
-        // Keep valid axis sliding if the second component hits a blocked cell.
-        if (!this.eng.grid.isOpenWorld(nx, nz) && this.eng.grid.isOpenWorld(px, pz)) {
-          nx = xOnly.x; nz = xOnly.z;
-          if (!this.eng.grid.isOpenWorld(nx, nz)) { nx = px; nz = pz; }
+        [nx, nz] = this.eng.grid.resolve(nx, pz + dz * sp * dt, 1.2);
+        if (!this.eng.grid.isOpenWorld(nx, nz)) {
+          if (this.eng.grid.isOpenWorld(nx, pz)) {
+            nz = pz;
+          } else if (this.eng.grid.isOpenWorld(px, nz)) {
+            nx = px;
+          } else {
+            nx = px; nz = pz;
+          }
         }
         a.group.position.x = nx; a.group.position.z = nz;
         a.group.rotation.y = Math.atan2(dx, dz);

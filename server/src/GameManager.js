@@ -311,10 +311,10 @@ export class GameManager {
   }
 
   overlapsLandscapeProp(x, z) {
-    const overlapsCollider = (minX, minZ, maxX, maxZ) => {
+    const overlapsCollider = (minX, minZ, maxX, maxZ, tolerance = 0.85) => {
       const dx = Math.max(minX - x, 0, x - maxX);
       const dz = Math.max(minZ - z, 0, z - maxZ);
-      return Math.hypot(dx, dz) < 2;
+      return Math.hypot(dx, dz) < tolerance;
     };
     for (const prop of this.map?.props || []) {
       if (prop.type === 'building') {
@@ -327,11 +327,11 @@ export class GameManager {
       } else if (prop.type === 'tree') {
         const scale = (prop.scale || 1) * (prop.variant === 'dead' ? 1.2 : 1);
         if (scale <= 1.12) continue;
-        const radius = scale * 0.85;
+        const radius = Math.max(0.65, scale * 0.35);
         const centerX = prop.x * CELL_FT, centerZ = prop.z * CELL_FT;
-        if (overlapsCollider(centerX - radius, centerZ - radius, centerX + radius, centerZ + radius)) return true;
+        if (overlapsCollider(centerX - radius, centerZ - radius, centerX + radius, centerZ + radius, 0.75)) return true;
       } else if (prop.type === 'boulder') {
-        const radius = Math.max(1, (prop.scale || 1) * 1.9 * 0.8);
+        const radius = Math.max(1.1, (prop.scale || 1) * 0.75);
         const centerX = prop.x * CELL_FT, centerZ = prop.z * CELL_FT;
         if (overlapsCollider(centerX - radius, centerZ - radius, centerX + radius, centerZ + radius)) return true;
       }

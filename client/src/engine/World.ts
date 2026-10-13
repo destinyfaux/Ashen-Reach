@@ -13,40 +13,199 @@ import { getAreaTileSet, getMaterial } from './materials';
 import { playSfx } from '../audio/music';
 import {
   softSprite, flameSprite, glowSprite, sparkSprite, streakSprite,
-  discSprite, shaftGradient, noiseTexture
+  discSprite, shaftGradient, noiseTexture, moonTexture, sunSprite
 } from './sprites';
 
-// Ash-hue sky: deep night ↔ pre-dawn ash purple ↔ ember dawn ↔ pale ash day.
-const SKY: [number, number][] = [
-  [0.0, 0x05070c], [4.3, 0x070a10], [5.3, 0x241f2b], [6.2, 0x5c4032],
-  [7.5, 0x63615a], [12.0, 0x6b6a60], [16.5, 0x5c544a], [18.3, 0x4e3028],
-  [19.5, 0x251a1e], [20.7, 0x0a0c12], [24.0, 0x05070c]
-];
-const SUNCOL: [number, number][] = [
-  [0.0, 0x8ca0cc], [4.3, 0x8ca0cc], [6.0, 0xd4813c], [8.0, 0xd8c2a2],
-  [12.0, 0xd8d2c2], [17.0, 0xd4b088], [18.8, 0xc06a38], [20.2, 0x8ca0cc], [24.0, 0x8ca0cc]
+export interface SkyState {
+  zenith: number;
+  midSky: number;
+  horizon: number;
+  low: number;
+  sunsetGlow: number;
+  sunColor: number;
+  moonColor: number;
+  hemiSky: number;
+  hemiGround: number;
+  ambient: number;
+  rim: number;
+  sunIntensity: number;
+  sunsetAmt: number;
+  nightFactor: number;
+}
+
+interface SkyKeyframe extends SkyState {
+  hour: number;
+}
+
+// 24-hour continuous atmospheric lighting schedule with rich golden hours (orange, pink, peach, magenta)
+const SKY_KEYFRAMES: SkyKeyframe[] = [
+  // 00:00 Midnight - Velvet space navy, luminous moon, cool silver glow
+  {
+    hour: 0.0,
+    zenith: 0x030610, midSky: 0x070d1a, horizon: 0x0b1322, low: 0x080e18,
+    sunsetGlow: 0x162032, sunColor: 0x9ab8e2, moonColor: 0xb8d0f4,
+    hemiSky: 0x1c263a, hemiGround: 0x0c121c, ambient: 0x242e42, rim: 0x6e8cb8,
+    sunIntensity: 0.55, sunsetAmt: 0.0, nightFactor: 1.0
+  },
+  // 04:30 Deep pre-dawn - Night holding, faint violet hint
+  {
+    hour: 4.5,
+    zenith: 0x050916, midSky: 0x091024, horizon: 0x121b30, low: 0x0d1422,
+    sunsetGlow: 0x222438, sunColor: 0x90a8cc, moonColor: 0xb0c8ec,
+    hemiSky: 0x202a3e, hemiGround: 0x0e141e, ambient: 0x283248, rim: 0x6884aa,
+    sunIntensity: 0.50, sunsetAmt: 0.0, nightFactor: 0.95
+  },
+  // 05:30 Astronomical Dawn - Deep violet-purple mid sky, faint rose-crimson horizon ember
+  {
+    hour: 5.5,
+    zenith: 0x0a1428, midSky: 0x241a38, horizon: 0x54243e, low: 0x361626,
+    sunsetGlow: 0x9a363a, sunColor: 0xcd7452, moonColor: 0x94acd2,
+    hemiSky: 0x2e2c48, hemiGround: 0x161420, ambient: 0x3e3650, rim: 0x82729a,
+    sunIntensity: 0.58, sunsetAmt: 0.45, nightFactor: 0.65
+  },
+  // 06:15 Civil Dawn - Flaming cadmium orange, coral & salmon dawn, vibrant pink/magenta mid-sky
+  {
+    hour: 6.25,
+    zenith: 0x162c56, midSky: 0x5a2d56, horizon: 0xd45032, low: 0xeb783c,
+    sunsetGlow: 0xfc6238, sunColor: 0xff8e40, moonColor: 0x8298b8,
+    hemiSky: 0x52446a, hemiGround: 0x281c20, ambient: 0x6e525e, rim: 0xb27464,
+    sunIntensity: 1.05, sunsetAmt: 0.95, nightFactor: 0.18
+  },
+  // 07:00 Morning Golden Hour - Radiant amber gold, apricot, peach haze
+  {
+    hour: 7.0,
+    zenith: 0x224a7c, midSky: 0x567da8, horizon: 0xd68b54, low: 0xebb478,
+    sunsetGlow: 0xf49c4e, sunColor: 0xffbe64, moonColor: 0x768ba4,
+    hemiSky: 0x646684, hemiGround: 0x322820, ambient: 0x867e78, rim: 0xbfa27e,
+    sunIntensity: 1.50, sunsetAmt: 0.55, nightFactor: 0.02
+  },
+  // 08:30 Crisp Morning - Atmospheric clear dark-fantasy azure
+  {
+    hour: 8.5,
+    zenith: 0x25528e, midSky: 0x5a8cb8, horizon: 0x90bddc, low: 0xc8e0ec,
+    sunsetGlow: 0xffd288, sunColor: 0xffe6be, moonColor: 0x667a92,
+    hemiSky: 0x6e7e98, hemiGround: 0x2c2620, ambient: 0x9aa09c, rim: 0xa0b2c8,
+    sunIntensity: 1.85, sunsetAmt: 0.0, nightFactor: 0.0
+  },
+  // 12:00 High Noon - Brilliant sunlit clarity, rich deep azure zenith
+  {
+    hour: 12.0,
+    zenith: 0x204e8a, midSky: 0x5286b6, horizon: 0x88b6d8, low: 0xc0dcf0,
+    sunsetGlow: 0xfff0d0, sunColor: 0xfffae8, moonColor: 0x5a6e84,
+    hemiSky: 0x7586a0, hemiGround: 0x302820, ambient: 0xa2a8a4, rim: 0x9cb4cb,
+    sunIntensity: 2.10, sunsetAmt: 0.0, nightFactor: 0.0
+  },
+  // 16:30 Late Afternoon - Sun tilting lower, warm golden dust
+  {
+    hour: 16.5,
+    zenith: 0x224880, midSky: 0x5882ac, horizon: 0xa6b2c6, low: 0xd6c6ac,
+    sunsetGlow: 0xf4b266, sunColor: 0xffd288, moonColor: 0x60748a,
+    hemiSky: 0x70788c, hemiGround: 0x30261c, ambient: 0x9a9488, rim: 0xb2a690,
+    sunIntensity: 1.75, sunsetAmt: 0.20, nightFactor: 0.0
+  },
+  // 17:45 Golden Hour - Rich honey amber, warm apricot and bronze gradients
+  {
+    hour: 17.75,
+    zenith: 0x1d3868, midSky: 0x5e6894, horizon: 0xd47e44, low: 0xeba25e,
+    sunsetGlow: 0xf68c3e, sunColor: 0xffa04e, moonColor: 0x7286a0,
+    hemiSky: 0x665a76, hemiGround: 0x34241a, ambient: 0x94786c, rim: 0xc68c64,
+    sunIntensity: 1.55, sunsetAmt: 0.75, nightFactor: 0.0
+  },
+  // 18:30 Peak Sunset - Flaming fiery orange, flamingo pink, coral, luscious plum-magenta mid sky
+  {
+    hour: 18.5,
+    zenith: 0x15244e, midSky: 0x702a5c, horizon: 0xdc462a, low: 0xf27c3e,
+    sunsetGlow: 0xfc5034, sunColor: 0xff6624, moonColor: 0x8698b4,
+    hemiSky: 0x58365c, hemiGround: 0x2a181c, ambient: 0x7e4e56, rim: 0xcc6452,
+    sunIntensity: 1.25, sunsetAmt: 1.0, nightFactor: 0.12
+  },
+  // 19:20 Dusk / Twilight - Deep crimson-ruby horizon ember, royal amethyst, midnight cobalt
+  {
+    hour: 19.33,
+    zenith: 0x0e1a3a, midSky: 0x381c44, horizon: 0x6c223a, low: 0x4a1828,
+    sunsetGlow: 0x9e2e3a, sunColor: 0xcc4c38, moonColor: 0x9cb2d2,
+    hemiSky: 0x362a48, hemiGround: 0x1a121a, ambient: 0x443648, rim: 0x905068,
+    sunIntensity: 0.70, sunsetAmt: 0.60, nightFactor: 0.58
+  },
+  // 20:15 Blue Hour - Moon taking the sky, deep twilight blue, subtle rose horizon fade
+  {
+    hour: 20.25,
+    zenith: 0x060e22, midSky: 0x10162e, horizon: 0x20182a, low: 0x14101e,
+    sunsetGlow: 0x362030, sunColor: 0x98aed4, moonColor: 0xb0c8ec,
+    hemiSky: 0x22283c, hemiGround: 0x10121a, ambient: 0x2c3446, rim: 0x7086a8,
+    sunIntensity: 0.58, sunsetAmt: 0.15, nightFactor: 0.88
+  },
+  // 21:00 Nightfall - Moonlight ruling the obsidian sky
+  {
+    hour: 21.0,
+    zenith: 0x030610, midSky: 0x070d1a, horizon: 0x0c1424, low: 0x080f1c,
+    sunsetGlow: 0x162234, sunColor: 0x9ab8e2, moonColor: 0xb8d0f4,
+    hemiSky: 0x1c263a, hemiGround: 0x0c121c, ambient: 0x222c40, rim: 0x6a86b4,
+    sunIntensity: 0.55, sunsetAmt: 0.0, nightFactor: 1.0
+  },
+  // 24:00 Midnight wrap
+  {
+    hour: 24.0,
+    zenith: 0x030610, midSky: 0x070d1a, horizon: 0x0b1322, low: 0x080e18,
+    sunsetGlow: 0x162032, sunColor: 0x9ab8e2, moonColor: 0xb8d0f4,
+    hemiSky: 0x1c263a, hemiGround: 0x0c121c, ambient: 0x242e42, rim: 0x6e8cb8,
+    sunIntensity: 0.55, sunsetAmt: 0.0, nightFactor: 1.0
+  }
 ];
 
-const WEATHERS: Record<string, { fog: number; rain: number }> = {
-  clear: { fog: 0.0010, rain: 0 }, overcast: { fog: 0.0018, rain: 0 },
-  fog: { fog: 0.0090, rain: 0 }, rain: { fog: 0.0028, rain: 0.55 }, storm: { fog: 0.0040, rain: 1.0 }
+const WEATHERS: Record<string, { fog: number; rain: number; cloudCoverage: number; cloudDensity: number }> = {
+  clear: { fog: 0.0010, rain: 0, cloudCoverage: 0.38, cloudDensity: 0.85 },
+  overcast: { fog: 0.0022, rain: 0, cloudCoverage: 0.72, cloudDensity: 1.15 },
+  fog: { fog: 0.0090, rain: 0, cloudCoverage: 0.62, cloudDensity: 1.00 },
+  rain: { fog: 0.0028, rain: 0.55, cloudCoverage: 0.80, cloudDensity: 1.25 },
+  storm: { fog: 0.0042, rain: 1.0, cloudCoverage: 0.90, cloudDensity: 1.45 }
 };
 
-function lerpHex(a: number, b: number, t: number) {
+function lerpHex(a: number, b: number, t: number): number {
   const r = (a >> 16 & 255) + (((b >> 16 & 255) - (a >> 16 & 255)) * t) | 0;
   const g = (a >> 8 & 255) + (((b >> 8 & 255) - (a >> 8 & 255)) * t) | 0;
   const bl = (a & 255) + (((b & 255) - (a & 255)) * t) | 0;
   return (r << 16) | (g << 8) | bl;
 }
-function keyLerp(table: [number, number][], hour: number) {
-  for (let i = 0; i < table.length - 1; i++) {
-    if (hour >= table[i][0] && hour <= table[i + 1][0]) {
-      const t = (hour - table[i][0]) / ((table[i + 1][0] - table[i][0]) || 1);
-      return lerpHex(table[i][1], table[i + 1][1], t);
+
+function lerpNum(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function smoothT(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+export function interpolateSky(hour: number): SkyState {
+  const h = ((hour % 24) + 24) % 24;
+  for (let i = 0; i < SKY_KEYFRAMES.length - 1; i++) {
+    const k0 = SKY_KEYFRAMES[i];
+    const k1 = SKY_KEYFRAMES[i + 1];
+    if (h >= k0.hour && h <= k1.hour) {
+      const rawT = (h - k0.hour) / ((k1.hour - k0.hour) || 1);
+      const t = smoothT(rawT);
+      return {
+        zenith: lerpHex(k0.zenith, k1.zenith, t),
+        midSky: lerpHex(k0.midSky, k1.midSky, t),
+        horizon: lerpHex(k0.horizon, k1.horizon, t),
+        low: lerpHex(k0.low, k1.low, t),
+        sunsetGlow: lerpHex(k0.sunsetGlow, k1.sunsetGlow, t),
+        sunColor: lerpHex(k0.sunColor, k1.sunColor, t),
+        moonColor: lerpHex(k0.moonColor, k1.moonColor, t),
+        hemiSky: lerpHex(k0.hemiSky, k1.hemiSky, t),
+        hemiGround: lerpHex(k0.hemiGround, k1.hemiGround, t),
+        ambient: lerpHex(k0.ambient, k1.ambient, t),
+        rim: lerpHex(k0.rim, k1.rim, t),
+        sunIntensity: lerpNum(k0.sunIntensity, k1.sunIntensity, t),
+        sunsetAmt: lerpNum(k0.sunsetAmt, k1.sunsetAmt, t),
+        nightFactor: lerpNum(k0.nightFactor, k1.nightFactor, t),
+      };
     }
   }
-  return table[table.length - 1][1];
+  const last = SKY_KEYFRAMES[SKY_KEYFRAMES.length - 1];
+  return { ...last };
 }
+
 
 interface Torch {
   light: THREE.PointLight;
@@ -81,6 +240,9 @@ export class World {
   private sunShafts: THREE.Mesh | null = null;
   private heightFogMat: THREE.ShaderMaterial | null = null;
   private sunShaftsMat: THREE.ShaderMaterial | null = null;
+  private cloudShadows: THREE.Mesh | null = null;
+  private cloudShadowMat: THREE.ShaderMaterial | null = null;
+  private cloudOffset = new THREE.Vector2(0, 0);
   private groundFogOp = 0;
   private deadlandFog = false;
   private skyDome!: THREE.Mesh;
@@ -149,16 +311,40 @@ export class World {
     this.eng.scene.add(this.stars);
   }
 
+  private buildSkyDiscs() {
+    this.sunDisc = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: sunSprite(256), color: 0xffffff, transparent: true, opacity: 0,
+      depthWrite: false, fog: false
+    }));
+    this.sunDisc.scale.setScalar(55);
+    this.eng.scene.add(this.sunDisc);
+
+    this.moonDisc = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: moonTexture(256), color: 0xffffff, transparent: true, opacity: 0,
+      depthWrite: false, fog: false
+    }));
+    this.moonDisc.scale.setScalar(62);
+    this.eng.scene.add(this.moonDisc);
+  }
+
   private buildSkyDome() {
     const material = new THREE.ShaderMaterial({
       uniforms: {
-        uTop: { value: new THREE.Color(0x10182c) },
-        uHorizon: { value: new THREE.Color(0x625c58) },
-        uLow: { value: new THREE.Color(0x927259) },
-        uSunset: { value: 0 },
+        uZenith: { value: new THREE.Color(0x25528e) },
+        uMidSky: { value: new THREE.Color(0x5a8cb8) },
+        uHorizon: { value: new THREE.Color(0x90bddc) },
+        uLow: { value: new THREE.Color(0xc8e0ec) },
+        uSunsetGlow: { value: new THREE.Color(0xfc5438) },
+        uSunsetAmt: { value: 0.0 },
+        uNightFactor: { value: 0.0 },
         uTime: { value: 0 },
         uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
-        uSunColor: { value: new THREE.Color(0xffd29a) },
+        uMoonDirection: { value: new THREE.Vector3(0, -1, 0) },
+        uSunColor: { value: new THREE.Color(0xfffae8) },
+        uMoonColor: { value: new THREE.Color(0xb8d0f4) },
+        uCloudCoverage: { value: 0.38 },
+        uCloudDensity: { value: 0.85 },
+        uWindOffset: { value: new THREE.Vector2(0, 0) },
       },
       vertexShader: `
         varying vec3 vDirection;
@@ -168,52 +354,145 @@ export class World {
         }
       `,
       fragmentShader: `
-        uniform vec3 uTop;
+        uniform vec3 uZenith;
+        uniform vec3 uMidSky;
         uniform vec3 uHorizon;
         uniform vec3 uLow;
-        uniform float uSunset;
+        uniform vec3 uSunsetGlow;
+        uniform float uSunsetAmt;
+        uniform float uNightFactor;
         uniform float uTime;
         uniform vec3 uSunDirection;
+        uniform vec3 uMoonDirection;
         uniform vec3 uSunColor;
+        uniform vec3 uMoonColor;
+        uniform float uCloudCoverage;
+        uniform float uCloudDensity;
+        uniform vec2 uWindOffset;
+
         varying vec3 vDirection;
-        float skyHash(vec3 p) {
-          p = fract(p * 0.1031);
-          p += dot(p, p.yzx + 33.33);
-          return fract((p.x + p.y) * p.z);
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
         }
-        float skyNoise(vec3 p) {
-          vec3 cell = floor(p), f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
+
+        float vnoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
           return mix(
-            mix(mix(skyHash(cell), skyHash(cell + vec3(1.0, 0.0, 0.0)), f.x),
-                mix(skyHash(cell + vec3(0.0, 1.0, 0.0)), skyHash(cell + vec3(1.0, 1.0, 0.0)), f.x), f.y),
-            mix(mix(skyHash(cell + vec3(0.0, 0.0, 1.0)), skyHash(cell + vec3(1.0, 0.0, 1.0)), f.x),
-                mix(skyHash(cell + vec3(0.0, 1.0, 1.0)), skyHash(cell + vec3(1.0, 1.0, 1.0)), f.x), f.y),
-            f.z
+            mix(hash21(i + vec2(0.0, 0.0)), hash21(i + vec2(1.0, 0.0)), u.x),
+            mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x),
+            u.y
           );
         }
+
+        float fbm(vec2 p) {
+          float v = 0.0;
+          v += 0.5000 * vnoise(p); p = p * 2.02 + vec2(1.6, 2.3);
+          v += 0.2500 * vnoise(p); p = p * 2.03 - vec2(2.1, 1.4);
+          v += 0.1250 * vnoise(p); p = p * 2.01 + vec2(3.5, 0.8);
+          v += 0.0625 * vnoise(p);
+          return v;
+        }
+
         void main() {
-          vec3 direction = normalize(vDirection);
-          float h = clamp(direction.y, -0.22, 0.92);
-          float upper = smoothstep(-0.03, 0.68, h);
-          vec3 sky = mix(uHorizon, uTop, upper);
-          float lower = 1.0 - smoothstep(-0.18, 0.08, h);
-          sky = mix(sky, uLow, lower * 0.78);
-          float glow = exp(-pow((h - 0.025) * 10.0, 2.0));
-          sky += vec3(0.34, 0.15, 0.065) * glow * uSunset;
-          float sunDot = max(dot(direction, normalize(uSunDirection)), 0.0);
-          float sunCorona = exp(-(1.0 - sunDot) * 15.0);
-          float sunCore = exp(-(1.0 - sunDot) * 180.0);
-          sky += uSunColor * (sunCorona * 0.18 + sunCore * 0.8);
-          vec3 cloudPoint = direction * 5.4 + vec3(uTime * 0.0018, 0.0, uTime * 0.0011);
-          float cloudNoise = skyNoise(cloudPoint) * 0.68 +
-            skyNoise(cloudPoint * 2.05 + vec3(4.7, 2.3, 8.1)) * 0.32;
-          float clouds = smoothstep(0.4, 0.56, cloudNoise) *
-            smoothstep(-0.12, 0.16, direction.y) * 0.68;
-          vec3 cloudColor = mix(uLow, uHorizon, smoothstep(-0.12, 0.24, direction.y));
-          cloudColor = mix(cloudColor, vec3(0.8, 0.83, 0.85), 0.54);
-          cloudColor = mix(cloudColor, uSunColor, smoothstep(0.8, 1.0, sunDot) * 0.2);
-          sky = mix(sky, cloudColor, clouds);
+          vec3 dir = normalize(vDirection);
+          float h = dir.y;
+
+          // 1. Atmospheric Gradient
+          float upper = smoothstep(0.02, 0.72, h);
+          float mid = smoothstep(-0.04, 0.38, h);
+          vec3 sky = mix(uHorizon, uZenith, upper);
+          sky = mix(sky, uMidSky, (1.0 - upper) * mid);
+          float lower = 1.0 - smoothstep(-0.24, 0.06, h);
+          sky = mix(sky, uLow, lower * 0.82);
+
+          // 2. Sunset / Golden Hour Atmospheric Scattering Belt
+          vec3 normSunDir = normalize(uSunDirection);
+          vec3 normMoonDir = normalize(uMoonDirection);
+          float sunAzimuth = max(0.0, dot(normalize(vec3(dir.x, 0.0, dir.z)), normalize(vec3(normSunDir.x, 0.0, normSunDir.z))));
+          float sunsetBelt = exp(-pow((h - 0.035) * 8.5, 2.0));
+          float sunsetDome = exp(-pow(max(0.0, h) * 3.2, 1.8));
+          vec3 sunsetAtmosphere = uSunsetGlow * (sunsetBelt * (0.55 + 0.95 * pow(sunAzimuth, 2.0)) + sunsetDome * pow(sunAzimuth, 4.0) * 0.85);
+          sky += sunsetAtmosphere * uSunsetAmt;
+
+          // 3. Sun and Moon Coronas / Atmospheric Halos
+          float sunDot = max(dot(dir, normSunDir), 0.0);
+          float sunCorona = pow(sunDot, 64.0) * 0.45 + pow(sunDot, 12.0) * 0.18;
+          sky += uSunColor * sunCorona * (1.0 - uNightFactor);
+
+          float moonDot = max(dot(dir, normMoonDir), 0.0);
+          float moonCorona = pow(moonDot, 96.0) * 0.38 + pow(moonDot, 14.0) * 0.14;
+          sky += uMoonColor * moonCorona * uNightFactor * 0.75;
+
+          // 4. Subtle background starry sparkle at night
+          if (uNightFactor > 0.05 && h > 0.05) {
+            float starGrid = hash21(floor(dir.xz / (h + 0.1) * 350.0));
+            float starTwinkle = sin(uTime * 4.0 + starGrid * 60.0) * 0.5 + 0.5;
+            float starBrightness = step(0.996, starGrid) * (0.3 + 0.7 * starTwinkle) * smoothstep(0.05, 0.25, h) * uNightFactor;
+            sky += vec3(0.85, 0.92, 1.0) * starBrightness * 0.8;
+          }
+
+          // 5. Planar Troposphere Cloud Layer
+          if (h > -0.05 && uCloudDensity > 0.01) {
+            float planeDist = 1.0 / max(h + 0.18, 0.08);
+            vec2 cloudCoord = (dir.xz * planeDist) * 0.0032 + uWindOffset;
+
+            // Domain warping for billowing clouds
+            vec2 warp = vec2(fbm(cloudCoord * 1.8 + vec2(0.0, 1.4)), fbm(cloudCoord * 1.8 + vec2(4.3, 2.8)));
+            float rawDensity = fbm(cloudCoord * 2.2 + warp * 0.45);
+
+            // Weather coverage thresholding
+            float cloudThresh = 1.0 - uCloudCoverage;
+            float cloudShape = smoothstep(cloudThresh - 0.18, cloudThresh + 0.22, rawDensity);
+            float horizonFade = smoothstep(-0.02, 0.20, h);
+            float cloudAlpha = clamp(cloudShape * horizonFade * uCloudDensity, 0.0, 1.0);
+
+            if (cloudAlpha > 0.002) {
+              // Modeling & Self-Shadowing: sample shifted towards sun
+              vec2 sunShift = normalize(normSunDir.xz + vec2(0.001)) * 0.14;
+              float sunSample = fbm((cloudCoord + sunShift) * 2.2 + warp * 0.45);
+              float directSunIllum = clamp((rawDensity - sunSample * 0.85) * 2.6 + 0.38, 0.15, 1.25);
+
+              // Forward Mie scattering (silver lining on sunlit edges)
+              float forwardScatter = pow(sunDot, 5.0) * (1.0 - cloudShape * 0.75) * 1.35;
+
+              // Daylight clouds
+              vec3 cloudSunlit = vec3(0.94, 0.93, 0.90) * uSunColor * 1.1;
+              vec3 cloudBelly = mix(uHorizon * 0.65, vec3(0.36, 0.40, 0.48), 0.52);
+              vec3 dayCloud = mix(cloudBelly, cloudSunlit, clamp(directSunIllum + forwardScatter, 0.0, 1.0));
+
+              // Golden Hour / Sunset clouds (vibrant peach, coral, salmon, and crimson alpenglow)
+              vec3 sunsetCloud = mix(vec3(0.32, 0.18, 0.26), uSunsetGlow * 1.42, directSunIllum * 0.85 + forwardScatter * 1.3);
+
+              // Night clouds (REALISTIC: dark slate charcoal, subtle moon silver illumination)
+              vec2 moonShift = normalize(normMoonDir.xz + vec2(0.001)) * 0.14;
+              float moonSample = fbm((cloudCoord + moonShift) * 2.2 + warp * 0.45);
+              float moonIllum = clamp((rawDensity - moonSample * 0.85) * 2.0 + 0.25, 0.05, 0.95);
+              float moonScatter = pow(moonDot, 4.0) * (1.0 - cloudShape * 0.7) * 0.35;
+              vec3 nightCloudBase = vec3(0.022, 0.028, 0.042);
+              vec3 nightCloudHighlight = vec3(0.12, 0.16, 0.24) * uMoonColor * 1.2;
+              vec3 nightCloud = mix(nightCloudBase, nightCloudHighlight, clamp(moonIllum * 0.5 + moonScatter, 0.0, 1.0));
+
+              // Blend day -> sunset -> night
+              vec3 litCloud = mix(dayCloud, sunsetCloud, uSunsetAmt);
+              litCloud = mix(litCloud, nightCloud, uNightFactor);
+
+              // Crepuscular god rays breaking through cloud canopy
+              float rayAngle = atan(dir.x - normSunDir.x, dir.y - normSunDir.y);
+              float rays = sin(rayAngle * 14.0 + uTime * 0.025) * 0.5 + 0.5;
+              rays = pow(rays, 3.0) * pow(sunDot, 2.2) * (1.0 - cloudAlpha * 0.65);
+              vec3 rayColor = mix(uSunColor, uSunsetGlow, uSunsetAmt);
+              sky += rayColor * rays * 0.35 * (1.0 - uNightFactor);
+
+              // Composite cloud layer over sky
+              sky = mix(sky, litCloud, cloudAlpha);
+            }
+          }
+
           gl_FragColor = vec4(sky, 1.0);
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
@@ -228,6 +507,7 @@ export class World {
     this.eng.scene.add(dome);
     return dome;
   }
+
 
   // ── rain: one mesh of streak quads (bright head, feathered tail) ──────────
   private buildRain() {
@@ -256,21 +536,6 @@ export class World {
     for (let i = 0; i < N; i++) drops.push({ x: 0, y: -100, z: 0, v: 40 + Math.random() * 24 });
     this.rain.userData.drops = drops;
     this.eng.scene.add(this.rain);
-  }
-
-  private buildSkyDiscs() {
-    this.sunDisc = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: discSprite(0.36), color: 0xe0993f, transparent: true, opacity: 0,
-      depthWrite: false, fog: false
-    }));
-    this.sunDisc.scale.setScalar(34);
-    this.eng.scene.add(this.sunDisc);
-    this.moonDisc = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: discSprite(0.42), color: 0xd8d2c0, transparent: true, opacity: 0,
-      depthWrite: false, fog: false
-    }));
-    this.moonDisc.scale.setScalar(15);
-    this.eng.scene.add(this.moonDisc);
   }
 
   // ── volumetric-ish light shaft (additive gradient cone, deliberately subtle)
@@ -667,6 +932,7 @@ export class World {
     this.buildGroundFog(map);
     this.buildHeightFogVolume(map);
     this.buildVolumetricShafts(map);
+    this.buildCloudShadows(map);
 
     const anchors: { x: number; y: number; z: number }[] = [];
     for (const l of map.lights) {
@@ -717,6 +983,126 @@ export class World {
     this.applyWeather();
   }
 
+  private buildCloudShadows(map: MapDef) {
+    if (this.cloudShadows) {
+      this.eng.scene.remove(this.cloudShadows);
+      this.cloudShadows.geometry.dispose();
+      (this.cloudShadows.material as THREE.Material).dispose();
+      this.cloudShadows = null;
+      this.cloudShadowMat = null;
+    }
+    if (this.isCrypt) return;
+
+    const W = map.size.w;
+    const H = map.size.h;
+    const terrain = map.terrain;
+    let geo: THREE.BufferGeometry;
+
+    if (terrain && terrain.width === W + 1 && terrain.height === H + 1) {
+      const vertices = (W + 1) * (H + 1);
+      const positions = new Float32Array(vertices * 3);
+      const uvs = new Float32Array(vertices * 2);
+      const indices = new Uint32Array(W * H * 6);
+      const heights = terrain.heightFt;
+      for (let z = 0; z <= H; z++) for (let x = 0; x <= W; x++) {
+        const at = (z * (W + 1) + x) * 3;
+        positions[at] = x * CELL;
+        positions[at + 1] = (heights[z * (W + 1) + x] || 0) + 0.20;
+        positions[at + 2] = z * CELL;
+        const uvAt = (z * (W + 1) + x) * 2;
+        uvs[uvAt] = x / W;
+        uvs[uvAt + 1] = 1 - z / H;
+      }
+      for (let z = 0; z < H; z++) for (let x = 0; x < W; x++) {
+        const at = z * W + x;
+        const base = at * 6;
+        const i0 = z * (W + 1) + x;
+        const i1 = i0 + 1;
+        const i2 = i0 + (W + 1);
+        const i3 = i2 + 1;
+        indices.set([i0, i2, i1, i1, i2, i3], base);
+      }
+      geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setIndex(new THREE.BufferAttribute(indices, 1));
+      geo.computeVertexNormals();
+    } else {
+      geo = new THREE.PlaneGeometry(W * CELL, H * CELL, 32, 32);
+    }
+
+    this.cloudShadowMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uWindOffset: { value: this.cloudOffset },
+        uCloudCoverage: { value: 0.38 },
+        uShadowStrength: { value: 0.36 },
+      },
+      vertexShader: `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: `
+        uniform vec2 uWindOffset;
+        uniform float uCloudCoverage;
+        uniform float uShadowStrength;
+        varying vec3 vWorldPos;
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(hash21(i + vec2(0.0,0.0)), hash21(i + vec2(1.0,0.0)), u.x),
+            mix(hash21(i + vec2(0.0,1.0)), hash21(i + vec2(1.0,1.0)), u.x),
+            u.y
+          );
+        }
+        float fbm(vec2 p) {
+          float v = 0.0;
+          v += 0.5000 * vnoise(p); p = p * 2.02 + vec2(1.6, 2.3);
+          v += 0.2500 * vnoise(p); p = p * 2.03 - vec2(2.1, 1.4);
+          v += 0.1250 * vnoise(p); p = p * 2.01 + vec2(3.5, 0.8);
+          v += 0.0625 * vnoise(p);
+          return v;
+        }
+
+        void main() {
+          if (uShadowStrength <= 0.005) discard;
+          vec2 cloudCoord = vWorldPos.xz * 0.0032 + uWindOffset;
+          vec2 warp = vec2(fbm(cloudCoord * 1.8 + vec2(0.0, 1.4)), fbm(cloudCoord * 1.8 + vec2(4.3, 2.8)));
+          float rawDensity = fbm(cloudCoord * 2.2 + warp * 0.45);
+          float cloudThresh = 1.0 - uCloudCoverage;
+          float shadowDensity = smoothstep(cloudThresh - 0.14, cloudThresh + 0.26, rawDensity);
+          float alpha = shadowDensity * uShadowStrength;
+          if (alpha <= 0.005) discard;
+          gl_FragColor = vec4(0.012, 0.016, 0.026, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide
+    });
+
+    this.cloudShadows = new THREE.Mesh(geo, this.cloudShadowMat);
+    if (!terrain || terrain.width !== W + 1 || terrain.height !== H + 1) {
+      this.cloudShadows.rotation.x = -Math.PI / 2;
+      this.cloudShadows.position.set((W * CELL) / 2, 0.20, (H * CELL) / 2);
+    }
+    this.cloudShadows.renderOrder = 1;
+    this.eng.scene.add(this.cloudShadows);
+  }
+
   private clearAtmosphere() {
     for (const t of this.torches) {
       this.eng.scene.remove(t.light); this.eng.scene.remove(t.sprite); this.eng.scene.remove(t.core);
@@ -763,12 +1149,20 @@ export class World {
       this.sunShafts = null;
       this.sunShaftsMat = null;
     }
+    if (this.cloudShadows) {
+      this.eng.scene.remove(this.cloudShadows);
+      this.cloudShadows.geometry.dispose();
+      (this.cloudShadows.material as THREE.Material).dispose();
+      this.cloudShadows = null;
+      this.cloudShadowMat = null;
+    }
   }
-
-  private isNight(hour: number) { return hour < 5.8 || hour > 19.4; }
 
   update(dt: number, env: { time: number; weather: string; mode: string }) {
     this.t += dt;
+    this.cloudOffset.x += this.wind.x * dt * 0.0006;
+    this.cloudOffset.y += this.wind.z * dt * 0.0006;
+
     this.fireSfxT -= dt;
     if (this.isCrypt && this.fireSfxT <= 0) {
       this.fireSfxT = 2.5 + Math.random() * 3.5;
@@ -779,121 +1173,127 @@ export class World {
     }
     const hour = (env.time / 60) % 24;
 
-    // ── sky / sun / moon
-    const sky = keyLerp(SKY, hour), sunC = keyLerp(SUNCOL, hour);
-    let nightF = hour < 6 ? (6 - hour) / 2.2 : hour > 18 ? (hour - 18) / 2.2 : 0;
-    nightF = Math.min(1, Math.max(0, nightF));
-    if (hour < 5 || hour > 20) nightF = 1;
-    const night = this.isNight(hour);
+    // Continuous 24-hour atmospheric interpolation
+    const atmo = interpolateSky(hour);
+    const wConfig = WEATHERS[this.weather] || WEATHERS.clear;
+    const cloudCoverage = wConfig.cloudCoverage ?? 0.38;
+    const cloudDensity = wConfig.cloudDensity ?? 1.0;
 
     const bg = this.eng.scene.background as THREE.Color | null;
     const fogC = this.eng.scene.fog as THREE.FogExp2;
     const skyUniforms = (this.skyDome.material as THREE.ShaderMaterial).uniforms;
+
+    const sunAngle = ((hour - 6) / 12) * Math.PI;
+    const moonAngle = sunAngle + Math.PI;
+
+    const sunDir = new THREE.Vector3(-Math.cos(sunAngle), Math.sin(sunAngle) * 0.88, 0.28).normalize();
+    const moonDir = new THREE.Vector3(-Math.cos(moonAngle), Math.sin(moonAngle) * 0.88, -0.28).normalize();
+
     skyUniforms.uTime.value = this.t;
-    skyUniforms.uSunDirection.value.set(-Math.cos(((hour - 6) / 12) * Math.PI),
-      Math.sin(((hour - 6) / 12) * Math.PI) * 0.75 + 0.1, 0.32).normalize();
-    skyUniforms.uSunColor.value.setHex(sunC);
+    skyUniforms.uSunDirection.value.copy(sunDir);
+    skyUniforms.uMoonDirection.value.copy(moonDir);
+    skyUniforms.uSunColor.value.setHex(atmo.sunColor);
+    skyUniforms.uMoonColor.value.setHex(atmo.moonColor);
+    skyUniforms.uZenith.value.setHex(this.isCrypt ? 0x060a0a : atmo.zenith);
+    skyUniforms.uMidSky.value.setHex(this.isCrypt ? 0x060a0a : atmo.midSky);
+    skyUniforms.uHorizon.value.setHex(this.isCrypt ? 0x060a0a : atmo.horizon);
+    skyUniforms.uLow.value.setHex(this.isCrypt ? 0x060a0a : atmo.low);
+    skyUniforms.uSunsetGlow.value.setHex(atmo.sunsetGlow);
+    skyUniforms.uSunsetAmt.value = this.isCrypt ? 0 : atmo.sunsetAmt;
+    skyUniforms.uNightFactor.value = this.isCrypt ? 1 : atmo.nightFactor;
+    skyUniforms.uCloudCoverage.value = cloudCoverage;
+    skyUniforms.uCloudDensity.value = this.isCrypt ? 0 : cloudDensity;
+    skyUniforms.uWindOffset.value.copy(this.cloudOffset);
+
     if (this.isCrypt) {
-      bg?.setHex(0x060a0a);                 // crypt blue-green black
+      bg?.setHex(0x060a0a);
       fogC.color.setHex(0x070c0c);
-      skyUniforms.uTop.value.setHex(0x060a0a);
-      skyUniforms.uHorizon.value.setHex(0x060a0a);
-      skyUniforms.uLow.value.setHex(0x060a0a);
-      skyUniforms.uSunset.value = 0;
     } else {
-      bg?.setHex(sky);
-      fogC.color.setHex(lerpHex(sky, 0x000000, 0.18));
-      skyUniforms.uTop.value.setHex(night ? lerpHex(sky, 0x071020, 0.72) : 0x5b9dce);
-      skyUniforms.uHorizon.value.setHex(night ? lerpHex(sky, 0x18263a, 0.54) : 0xbad5e6);
-      skyUniforms.uLow.value.setHex(night ? lerpHex(sky, 0x111a29, 0.5) : 0xe4d0aa);
-      skyUniforms.uSunset.value = Math.max(
-        0, 1 - Math.abs(hour - 6.4) / 1.8, 1 - Math.abs(hour - 18.1) / 2.1,
-      );
+      bg?.setHex(atmo.horizon);
+      fogC.color.setHex(lerpHex(atmo.horizon, 0x000000, 0.16));
     }
     this.skyDome.position.copy(this.eng.camera.position);
 
-    const sunAngle = ((hour - 6) / 12) * Math.PI;
     const focus = this.eng.actors.focusPoint();
-    const dirY = night ? 0.55 : Math.max(0.18, Math.sin(sunAngle));
-    this.sun.position.set(focus.x + Math.cos(sunAngle) * -120, 80 + dirY * 100, focus.z + 60);
-    this.sun.target.position.set(focus.x, 0, focus.z);
-    this.sun.color.setHex(this.isCrypt ? 0x2c2822 : (night ? 0x8ca0cc : sunC));
-    this.sun.intensity = this.isCrypt ? 0.3 : (night ? 0.55 : 0.65 + Math.min(1.45, Math.max(0, Math.sin(sunAngle)) * 1.5));
-    this.sun.castShadow = !this.isCrypt;    // no sun shadows indoors — torches only
-    // rim light: crypt blue-green; night moon-blue; day cool sky
-    this.rim.color.setHex(this.isCrypt ? 0x5a8a86 : (night ? 0x8ca0cc : 0x9ab0c8));
-    this.rim.intensity = this.isCrypt ? 0.18 : (night ? 0.3 : 0.36);
-    this.hemi.color.setHex(this.isCrypt ? 0x36444c : (night ? 0x46506e : 0x6a7488));
-    this.hemi.groundColor.setHex(this.isCrypt ? 0x171310 : 0x2a2218);
-    this.hemi.intensity = this.isCrypt ? 0.32 : (night ? 0.5 : 0.92);
-    this.ambient.color.setHex(this.isCrypt ? 0x6f7d82 : (night ? 0x4a5a78 : 0x9a968c));
-    this.ambient.intensity = this.isCrypt ? 0.3 : (night ? 0.5 : 0.82);
-    (this.stars.material as THREE.PointsMaterial).opacity = this.isCrypt ? 0 : Math.min(1, Math.max(0, (nightF - 0.3) * 1.5));
 
-    // ── sky discs (ember sun / bone moon) — outdoors only
+    // ── sky discs (sun / moon) — outdoors only
     if (!this.isCrypt) {
-      _v.set(-Math.cos(sunAngle), Math.sin(sunAngle) * 0.75 + 0.1, 0.32).normalize();
-      this.sunDisc.position.set(focus.x + _v.x * 460, _v.y * 460, focus.z + _v.z * 460);
-      (this.sunDisc.material as THREE.SpriteMaterial).opacity = Math.max(0, Math.min(1, Math.sin(sunAngle) * 4)) * 0.95;
-      _v.set(Math.cos(sunAngle), -Math.sin(sunAngle) * 0.7 + 0.25, -0.3).normalize();
-      this.moonDisc.position.set(focus.x + _v.x * 460, _v.y * 460, focus.z + _v.z * 460);
-      (this.moonDisc.material as THREE.SpriteMaterial).opacity = nightF * 0.9;
+      this.sunDisc.position.set(focus.x + sunDir.x * 480, sunDir.y * 480, focus.z + sunDir.z * 480);
+      const sunVisible = Math.max(0, Math.min(1, (sunDir.y + 0.05) * 6));
+      (this.sunDisc.material as THREE.SpriteMaterial).opacity = sunVisible * (1.0 - atmo.nightFactor * 0.85);
+
+      this.moonDisc.position.set(focus.x + moonDir.x * 480, moonDir.y * 480, focus.z + moonDir.z * 480);
+      const moonVisible = Math.max(0, Math.min(1, (moonDir.y + 0.05) * 6));
+      (this.moonDisc.material as THREE.SpriteMaterial).opacity = moonVisible * atmo.nightFactor * 0.95;
     } else {
       (this.sunDisc.material as THREE.SpriteMaterial).opacity = 0;
       (this.moonDisc.material as THREE.SpriteMaterial).opacity = 0;
     }
 
-    // ── fog / rain blend
-    this.fogDensity += (this.fogTarget - this.fogDensity) * Math.min(1, dt * 1.6);
-    this.rainAmt += ((this.rainTarget === 0 ? 0 : this.rainTarget) - this.rainAmt) * Math.min(1, dt * 0.4);
-    fogC.density = this.fogDensity;
+    // ── directional celestial light (sun during day, moon during night)
+    const isDay = sunDir.y > 0.02;
+    const activeDir = isDay ? sunDir : moonDir;
+    const activeColor = isDay ? atmo.sunColor : atmo.moonColor;
 
-    // ── layered ground fog drift
-    const fogTargetOp = this.isCrypt ? 0.52 : this.deadlandFog ? 0.38 : (this.weather === 'fog' ? 0.42 : 0.22);
-    this.groundFogOp += (fogTargetOp - this.groundFogOp) * Math.min(1, dt * 0.6);
-    const groundFogColor = this.isCrypt ? 0x0c1618 : (night ? 0x14181c : lerpHex(sky, 0x202422, 0.4));
-    for (let i = 0; i < this.groundFogLayers.length; i++) {
-      const layer = this.groundFogLayers[i];
-      const mat = layer.material as THREE.ShaderMaterial;
-      mat.uniforms.uTime.value = this.t;
-      mat.uniforms.uColor.value.setHex(groundFogColor);
-      const tierMul = 1.0 - i * 0.25;
-      mat.uniforms.uOpacity.value = this.groundFogOp * tierMul * (0.85 + Math.sin(this.t * 0.25 + i) * 0.15);
-    }
+    // Check overhead cloud cover above focus to gently dim sunlight when in cloud shadow
+    const overheadUvX = focus.x * 0.0032 + this.cloudOffset.x;
+    const overheadUvZ = focus.z * 0.0032 + this.cloudOffset.y;
+    const cloudOsc = Math.sin(overheadUvX * 12.0) * Math.cos(overheadUvZ * 12.0) * 0.5 + 0.5;
+    const inCloudShadow = isDay && !this.isCrypt && cloudCoverage > 0.35 ? cloudOsc * 0.28 : 0.0;
 
-    // ── volumetric height fog volume update
-    if (this.heightFogVolume && this.heightFogMat) {
-      this.heightFogMat.uniforms.uTime.value = this.t;
-      this.heightFogMat.uniforms.uCameraPos.value.copy(this.eng.camera.position);
-      const fogHex = this.isCrypt ? 0x070c0c : (night ? 0x0e141c : lerpHex(sky, 0x303840, 0.25));
-      this.heightFogMat.uniforms.uFogColor.value.setHex(fogHex);
-      this.heightFogMat.uniforms.uSunColor.value.setHex(night ? 0x8ca0cc : sunC);
-      this.heightFogMat.uniforms.uSunDirection.value.copy(skyUniforms.uSunDirection.value);
-      this.heightFogMat.uniforms.uDensity.value = this.isCrypt ? 0.38 : (this.weather === 'fog' ? 0.48 : 0.18 + this.rainAmt * 0.12);
-      this.heightFogVolume.position.x = focus.x;
-      this.heightFogVolume.position.z = focus.z;
+    const activeIntensity = isDay
+      ? atmo.sunIntensity * (1.0 - inCloudShadow)
+      : (atmo.sunIntensity * 0.75 + 0.25 * atmo.nightFactor);
+
+    this.sun.position.set(
+      focus.x - activeDir.x * 120,
+      80 + Math.max(18, activeDir.y * 100),
+      focus.z - activeDir.z * 120
+    );
+    this.sun.target.position.set(focus.x, 0, focus.z);
+    this.sun.color.setHex(this.isCrypt ? 0x2c2822 : activeColor);
+    this.sun.intensity = this.isCrypt ? 0.3 : activeIntensity;
+    this.sun.castShadow = !this.isCrypt;
+
+    // ── ambient & rim lighting
+    this.rim.color.setHex(this.isCrypt ? 0x5a8a86 : atmo.rim);
+    this.rim.intensity = this.isCrypt ? 0.18 : (isDay ? 0.34 : 0.28);
+    this.hemi.color.setHex(this.isCrypt ? 0x36444c : atmo.hemiSky);
+    this.hemi.groundColor.setHex(this.isCrypt ? 0x171310 : atmo.hemiGround);
+    this.hemi.intensity = this.isCrypt ? 0.32 : (isDay ? 0.88 : 0.48);
+    this.ambient.color.setHex(this.isCrypt ? 0x6f7d82 : atmo.ambient);
+    this.ambient.intensity = this.isCrypt ? 0.3 : (isDay ? 0.80 : 0.44);
+    (this.stars.material as THREE.PointsMaterial).opacity = this.isCrypt ? 0 : Math.min(1, Math.max(0, (atmo.nightFactor - 0.2) * 1.35));
+
+    // ── dynamic cloud shadows on landscape
+    if (this.cloudShadowMat) {
+      this.cloudShadowMat.uniforms.uTime.value = this.t;
+      this.cloudShadowMat.uniforms.uWindOffset.value.copy(this.cloudOffset);
+      this.cloudShadowMat.uniforms.uCloudCoverage.value = cloudCoverage;
+      const baseShadowStrength = (1.0 - atmo.nightFactor) * 0.42 + atmo.nightFactor * 0.08;
+      this.cloudShadowMat.uniforms.uShadowStrength.value = this.isCrypt ? 0 : baseShadowStrength * (1.0 - this.rainAmt * 0.35);
     }
 
     // ── volumetric sun / moon shafts update
     if (this.sunShafts && this.sunShaftsMat) {
       this.sunShaftsMat.uniforms.uTime.value = this.t;
       this.sunShaftsMat.uniforms.uCameraPos.value.copy(this.eng.camera.position);
-      const sunDir = skyUniforms.uSunDirection.value.clone();
-      if (night) sunDir.negate();
-      this.sunShaftsMat.uniforms.uSunDirection.value.copy(sunDir);
-      this.sunShaftsMat.uniforms.uSunColor.value.setHex(night ? 0x8ca0cc : sunC);
+      const shaftDir = activeDir.clone();
+      this.sunShaftsMat.uniforms.uSunDirection.value.copy(shaftDir);
+      this.sunShaftsMat.uniforms.uSunColor.value.setHex(activeColor);
 
       const shaftIntensity = this.isCrypt
         ? 0.08
-        : (night
-          ? (0.06 * nightF)
-          : (0.16 + Math.sin(sunAngle) * 0.12) * (1.0 - this.rainAmt * 0.65));
+        : (isDay
+          ? (0.18 + Math.max(0, sunDir.y) * 0.14) * (1.0 - this.rainAmt * 0.65)
+          : (0.10 * atmo.nightFactor) * (1.0 - this.rainAmt * 0.65));
       this.sunShaftsMat.uniforms.uIntensity.value = this.weather === 'storm' ? shaftIntensity * 0.2 : shaftIntensity;
 
       this.sunShafts.position.set(focus.x, 80, focus.z);
-      _v.copy(sunDir).negate();
+      _v.copy(shaftDir).negate();
       this.sunShafts.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), _v);
     }
+
 
     // ── brazier embers rise + gutter
     if (this.embers) {

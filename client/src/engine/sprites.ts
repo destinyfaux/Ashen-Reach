@@ -346,3 +346,154 @@ function hexToRgb(h: string): [number, number, number] {
   const n = parseInt(h.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
+
+// ── realistic procedural moon: maria basalt plains, crater rims & celestial halo ──
+let _moon: THREE.CanvasTexture | null = null;
+export function moonTexture(size = 256): THREE.CanvasTexture {
+  if (_moon) return _moon;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d')!;
+  const cx = size / 2, cy = size / 2;
+  const radius = size * 0.38;
+
+  // Outer lunar corona / celestial glow
+  const halo = g.createRadialGradient(cx, cy, radius * 0.8, cx, cy, size * 0.49);
+  halo.addColorStop(0, 'rgba(215, 230, 255, 0.55)');
+  halo.addColorStop(0.35, 'rgba(180, 205, 240, 0.22)');
+  halo.addColorStop(0.7, 'rgba(150, 180, 225, 0.06)');
+  halo.addColorStop(1, 'rgba(120, 150, 210, 0)');
+  g.fillStyle = halo;
+  g.beginPath();
+  g.arc(cx, cy, size * 0.49, 0, Math.PI * 2);
+  g.fill();
+
+  // Base spherical lunar disc with limb darkening
+  g.save();
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.clip();
+
+  const discGrad = g.createRadialGradient(cx - radius * 0.15, cy - radius * 0.15, radius * 0.05, cx, cy, radius);
+  discGrad.addColorStop(0, '#fbf8f0');
+  discGrad.addColorStop(0.65, '#ded9cf');
+  discGrad.addColorStop(0.92, '#b2aba0');
+  discGrad.addColorStop(1.0, '#78736a');
+  g.fillStyle = discGrad;
+  g.fillRect(0, 0, size, size);
+
+  // Lunar maria (dark basalt plains: Oceanus Procellarum, Mare Imbrium, Mare Serenitatis, Mare Tranquillitatis)
+  const maria: { x: number; y: number; rx: number; ry: number; rot: number; op: number }[] = [
+    { x: cx - radius * 0.32, y: cy - radius * 0.12, rx: radius * 0.36, ry: radius * 0.44, rot: 0.2, op: 0.42 },
+    { x: cx + radius * 0.10, y: cy - radius * 0.34, rx: radius * 0.32, ry: radius * 0.28, rot: -0.1, op: 0.46 },
+    { x: cx + radius * 0.36, y: cy - radius * 0.18, rx: radius * 0.26, ry: radius * 0.24, rot: 0.3, op: 0.48 },
+    { x: cx + radius * 0.38, y: cy + radius * 0.08, rx: radius * 0.30, ry: radius * 0.26, rot: -0.2, op: 0.50 },
+    { x: cx + radius * 0.22, y: cy + radius * 0.34, rx: radius * 0.24, ry: radius * 0.22, rot: 0.1, op: 0.44 },
+    { x: cx - radius * 0.08, y: cy + radius * 0.18, rx: radius * 0.28, ry: radius * 0.32, rot: -0.3, op: 0.38 },
+    { x: cx - radius * 0.42, y: cy + radius * 0.25, rx: radius * 0.20, ry: radius * 0.26, rot: 0.4, op: 0.35 }
+  ];
+
+  for (const m of maria) {
+    g.save();
+    g.translate(m.x, m.y);
+    g.rotate(m.rot);
+    const mg = g.createRadialGradient(0, 0, 0, 0, 0, Math.max(m.rx, m.ry));
+    mg.addColorStop(0, `rgba(55, 52, 48, ${m.op})`);
+    mg.addColorStop(0.55, `rgba(75, 71, 66, ${m.op * 0.8})`);
+    mg.addColorStop(0.85, `rgba(105, 100, 93, ${m.op * 0.35})`);
+    mg.addColorStop(1, 'rgba(130, 125, 118, 0)');
+    g.fillStyle = mg;
+    g.beginPath();
+    g.ellipse(0, 0, m.rx, m.ry, 0, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+  }
+
+  // Micro-craters and surface texture speckle
+  let seed = 0x1337;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (let i = 0; i < 90; i++) {
+    const ang = rnd() * Math.PI * 2;
+    const dist = Math.sqrt(rnd()) * (radius * 0.94);
+    const crX = cx + Math.cos(ang) * dist;
+    const crY = cy + Math.sin(ang) * dist;
+    const crR = 1.2 + rnd() * 4.2;
+    // Crater floor (dark)
+    g.fillStyle = `rgba(40, 38, 35, ${0.25 + rnd() * 0.35})`;
+    g.beginPath();
+    g.arc(crX, crY, crR, 0, Math.PI * 2);
+    g.fill();
+    // Bright sunlit rim
+    g.fillStyle = `rgba(255, 252, 244, ${0.4 + rnd() * 0.45})`;
+    g.beginPath();
+    g.arc(crX - crR * 0.25, crY - crR * 0.25, crR * 0.55, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // Famous bright impact ray crater (Tycho-like radiating rays in southern highlands)
+  const tychoX = cx - radius * 0.12, tychoY = cy + radius * 0.62;
+  for (let r = 0; r < 14; r++) {
+    const rayAng = (r / 14) * Math.PI * 2 + rnd() * 0.2;
+    const rayLen = radius * (0.35 + rnd() * 0.45);
+    const rayGrad = g.createLinearGradient(tychoX, tychoY, tychoX + Math.cos(rayAng) * rayLen, tychoY + Math.sin(rayAng) * rayLen);
+    rayGrad.addColorStop(0, 'rgba(255, 255, 250, 0.45)');
+    rayGrad.addColorStop(0.3, 'rgba(245, 242, 235, 0.22)');
+    rayGrad.addColorStop(1, 'rgba(220, 215, 205, 0)');
+    g.strokeStyle = rayGrad;
+    g.lineWidth = 1.0 + rnd() * 1.5;
+    g.beginPath();
+    g.moveTo(tychoX, tychoY);
+    g.lineTo(tychoX + Math.cos(rayAng) * rayLen, tychoY + Math.sin(rayAng) * rayLen);
+    g.stroke();
+  }
+  // Tycho bright center
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.arc(tychoX, tychoY, 2.5, 0, Math.PI * 2);
+  g.fill();
+
+  g.restore();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  _moon = tex;
+  return tex;
+}
+
+// ── procedural sun: incandescent solar disc with warm corona halo ──
+let _sunTex: THREE.CanvasTexture | null = null;
+export function sunSprite(size = 256): THREE.CanvasTexture {
+  if (_sunTex) return _sunTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d')!;
+  const cx = size / 2, cy = size / 2;
+
+  // Wide radiant solar flare & corona
+  const corona = g.createRadialGradient(cx, cy, size * 0.18, cx, cy, size * 0.49);
+  corona.addColorStop(0, 'rgba(255, 240, 200, 0.95)');
+  corona.addColorStop(0.18, 'rgba(255, 205, 120, 0.65)');
+  corona.addColorStop(0.45, 'rgba(255, 150, 50, 0.25)');
+  corona.addColorStop(0.75, 'rgba(240, 95, 25, 0.08)');
+  corona.addColorStop(1, 'rgba(200, 50, 10, 0)');
+  g.fillStyle = corona;
+  g.beginPath();
+  g.arc(cx, cy, size * 0.49, 0, Math.PI * 2);
+  g.fill();
+
+  // Blinding white-hot core
+  const core = g.createRadialGradient(cx, cy, 0, cx, cy, size * 0.22);
+  core.addColorStop(0, '#ffffff');
+  core.addColorStop(0.45, '#fffbf2');
+  core.addColorStop(0.8, '#ffe2a8');
+  core.addColorStop(1, 'rgba(255, 200, 110, 0.85)');
+  g.fillStyle = core;
+  g.beginPath();
+  g.arc(cx, cy, size * 0.22, 0, Math.PI * 2);
+  g.fill();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  _sunTex = tex;
+  return tex;
+}
