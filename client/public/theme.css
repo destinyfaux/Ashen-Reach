@@ -768,6 +768,15 @@ body::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-in
 .ta-btn .ic { width: 15px; height: 15px; }
 .ta-btn.ta-end { border-color: #6a3a2a; }
 .ta-btn.ta-end:hover { border-color: #b96a4a; color: #e8b49a; }
+.ta-spell {
+  min-width: 170px; max-width: 30vw; padding: 8px 10px; border-radius: 3px;
+  color: #e8d9a0; background: #12141a; border: 1px solid #4a4232;
+  font: 600 13px 'EB Garamond', serif; letter-spacing: normal; text-transform: none;
+}
+.ta-spell:focus-visible { outline: 2px solid #b8952f; outline-offset: 2px; }
+.ta-features { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+.ta-btn.ta-feature { padding: 6px 11px; font-size: 12px; }
+.ta-btn.ta-feature span { letter-spacing: .02em; }
 .turn-move {
   font: 400 12px/1 'EB Garamond', serif; color: #8a8378; letter-spacing: .04em;
 }

@@ -203,8 +203,14 @@ grid of 112×96-cell regions:
 - **Stitching.** Every region def (home included) is post-processed: the artificial
   boundary ring is stripped, river water cells are injected into border strips so
   rivers flow across seams, world-road cells inside the window are added, and the
-  shoreline surface clamp is reapplied. Raw home output still feeds the untouched
-  `worldGenerator` tests.
+  shoreline surface clamp is reapplied with world-aware neighbor lookups
+  (`worldWaterCellAt`) so interior water is no longer trenched where a lake or
+  river crosses a region seam. Each region payload also carries `cells.waterHalo`
+  — water cells up to 2 outside the region (with mirrored surface levels) — which
+  the client blends into shore foam, bank tinting and seam-vertex averaging so a
+  lake spanning two regions renders as one body; out-of-bounds floor vertices no
+  longer darken as walls on outdoor maps. Raw home output still feeds the
+  untouched `worldGenerator` tests.
 - **World sites.** Deterministic composition sites: exactly one ring-1 region (hash
   chosen) carries a walled graveyard (gate, fence with gaps, marker/mound rows,
   mausoleum, columbaria, dead brush) — town-adjacency rule; lush meadow/forest regions

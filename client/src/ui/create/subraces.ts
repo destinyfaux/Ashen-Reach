@@ -14,8 +14,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Hill Dwarf",
       "name": "Hill Dwarf",
+      "flavor": "",
       "asi": {
-        "WIS": 1
+        "wis": 1
       },
       "traits": [
         {
@@ -27,8 +28,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Mountain Dwarf",
       "name": "Mountain Dwarf",
+      "flavor": "",
       "asi": {
-        "STR": 2
+        "str": 2
       },
       "traits": [
         {
@@ -40,8 +42,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Duergar",
       "name": "Duergar",
+      "flavor": "",
       "asi": {
-        "STR": 1
+        "str": 1
       },
       "traits": [
         {
@@ -67,8 +70,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "High Elf",
       "name": "High Elf",
+      "flavor": "",
       "asi": {
-        "INT": 1
+        "int": 1
       },
       "traits": [
         {
@@ -88,8 +92,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Wood Elf",
       "name": "Wood Elf",
+      "flavor": "",
       "asi": {
-        "WIS": 1
+        "wis": 1
       },
       "traits": [
         {
@@ -109,8 +114,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Drow",
       "name": "Drow",
+      "flavor": "",
       "asi": {
-        "CHA": 1
+        "cha": 1
       },
       "traits": [
         {
@@ -134,8 +140,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Eladrin",
       "name": "Eladrin",
+      "flavor": "",
       "asi": {
-        "CHA": 1
+        "cha": 1
       },
       "traits": [
         {
@@ -155,8 +162,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Sea Elf",
       "name": "Sea Elf",
+      "flavor": "",
       "asi": {
-        "CON": 1
+        "con": 1
       },
       "traits": [
         {
@@ -184,8 +192,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Shadar-kai",
       "name": "Shadar-kai",
+      "flavor": "",
       "asi": {
-        "CON": 1
+        "con": 1
       },
       "traits": [
         {
@@ -201,9 +210,10 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Ash Elf",
       "name": "Ash Elf",
+      "flavor": "",
       "asi": {
-        "DEX": 2,
-        "INT": 1
+        "dex": 2,
+        "int": 1
       },
       "traits": [
         {
@@ -237,8 +247,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Lightfoot",
       "name": "Lightfoot",
+      "flavor": "",
       "asi": {
-        "CHA": 1
+        "cha": 1
       },
       "traits": [
         {
@@ -250,8 +261,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Stout",
       "name": "Stout",
+      "flavor": "",
       "asi": {
-        "CON": 1
+        "con": 1
       },
       "traits": [
         {
@@ -263,8 +275,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Ghostwise",
       "name": "Ghostwise",
+      "flavor": "",
       "asi": {
-        "WIS": 1
+        "wis": 1
       },
       "traits": [
         {
@@ -278,6 +291,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Variant",
       "name": "Variant",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -303,6 +317,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Black",
       "name": "Black",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -318,6 +333,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Blue",
       "name": "Blue",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -333,6 +349,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Brass",
       "name": "Brass",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -348,6 +365,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Bronze",
       "name": "Bronze",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -363,6 +381,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Copper",
       "name": "Copper",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -378,6 +397,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Gold",
       "name": "Gold",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -393,6 +413,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Green",
       "name": "Green",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -408,6 +429,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Red",
       "name": "Red",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -423,6 +445,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Silver",
       "name": "Silver",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -438,6 +461,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "White",
       "name": "White",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -455,8 +479,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Forest Gnome",
       "name": "Forest Gnome",
+      "flavor": "",
       "asi": {
-        "DEX": 1
+        "dex": 1
       },
       "traits": [
         {
@@ -472,8 +497,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Rock Gnome",
       "name": "Rock Gnome",
+      "flavor": "",
       "asi": {
-        "CON": 1
+        "con": 1
       },
       "traits": [
         {
@@ -491,6 +517,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Wood Elf Descent",
       "name": "Wood Elf Descent",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -510,6 +537,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Moon Elf or Sun Elf Descent",
       "name": "Moon Elf or Sun Elf Descent",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -529,6 +557,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Drow Descent",
       "name": "Drow Descent",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -546,8 +575,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Feral",
       "name": "Feral",
+      "flavor": "",
       "asi": {
-        "DEX": 1
+        "dex": 1
       },
       "traits": [
         {
@@ -559,8 +589,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Dispater Tiefling",
       "name": "Dispater Tiefling",
+      "flavor": "",
       "asi": {
-        "DEX": 1
+        "dex": 1
       },
       "traits": [
         {
@@ -576,8 +607,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Glasya Tiefling",
       "name": "Glasya Tiefling",
+      "flavor": "",
       "asi": {
-        "DEX": 1
+        "dex": 1
       },
       "traits": [
         {
@@ -593,8 +625,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Mammon Tiefling",
       "name": "Mammon Tiefling",
+      "flavor": "",
       "asi": {
-        "INT": 1
+        "int": 1
       },
       "traits": [
         {
@@ -606,8 +639,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Mephistopheles Tiefling",
       "name": "Mephistopheles Tiefling",
+      "flavor": "",
       "asi": {
-        "INT": 1
+        "int": 1
       },
       "traits": [
         {
@@ -619,8 +653,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Zariel Tiefling",
       "name": "Zariel Tiefling",
+      "flavor": "",
       "asi": {
-        "STR": 1
+        "str": 1
       },
       "traits": [
         {
@@ -636,8 +671,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Zariel Tiefling (BGDiA)",
       "name": "Zariel Tiefling (BGDiA)",
+      "flavor": "",
       "asi": {
-        "STR": 1
+        "str": 1
       },
       "traits": [
         {
@@ -659,8 +695,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Air Genasi",
       "name": "Air Genasi",
+      "flavor": "",
       "asi": {
-        "DEX": 1
+        "dex": 1
       },
       "traits": [
         {
@@ -676,8 +713,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Earth Genasi",
       "name": "Earth Genasi",
+      "flavor": "",
       "asi": {
-        "STR": 1
+        "str": 1
       },
       "traits": [
         {
@@ -693,8 +731,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Fire Genasi",
       "name": "Fire Genasi",
+      "flavor": "",
       "asi": {
-        "INT": 1
+        "int": 1
       },
       "traits": [
         {
@@ -714,8 +753,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Water Genasi",
       "name": "Water Genasi",
+      "flavor": "",
       "asi": {
-        "WIS": 1
+        "wis": 1
       },
       "traits": [
         {
@@ -741,6 +781,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "MToF Expanded",
       "name": "MToF Expanded",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -754,8 +795,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Protector",
       "name": "Protector",
+      "flavor": "",
       "asi": {
-        "WIS": 1
+        "wis": 1
       },
       "traits": [
         {
@@ -767,8 +809,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Scourge",
       "name": "Scourge",
+      "flavor": "",
       "asi": {
-        "CON": 1
+        "con": 1
       },
       "traits": [
         {
@@ -780,8 +823,9 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Fallen",
       "name": "Fallen",
+      "flavor": "",
       "asi": {
-        "STR": 1
+        "str": 1
       },
       "traits": [
         {
@@ -795,6 +839,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Amethyst",
       "name": "Amethyst",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -814,6 +859,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Crystal",
       "name": "Crystal",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -833,6 +879,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Emerald",
       "name": "Emerald",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -852,6 +899,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Sapphire",
       "name": "Sapphire",
+      "flavor": "",
       "asi": {},
       "traits": [
         {
@@ -871,6 +919,7 @@ export const SUBRACES_BY_RACE: Record<string, SubraceData[]> = {
     {
       "id": "Topaz",
       "name": "Topaz",
+      "flavor": "",
       "asi": {},
       "traits": [
         {

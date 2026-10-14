@@ -133,12 +133,14 @@ export function mountHud(container: HTMLElement): () => void {
       </div>
       <div class="turn-actions">
         <button type="button" class="ta-btn" data-act="attack" disabled>${icon('sword', 'ic ic-sm')} <span>Strike</span></button>
-        <button type="button" class="ta-btn" data-act="cantrip" data-cantrip disabled hidden>${icon('sparkle', 'ic ic-sm')} <span data-cantrip-name>Cantrip</span></button>
+        <select class="ta-spell" data-spell-select aria-label="Choose a spell" hidden></select>
+        <button type="button" class="ta-btn" data-act="cast" data-cast disabled hidden>${icon('sparkle', 'ic ic-sm')} <span>Cast</span></button>
         <button type="button" class="ta-btn" data-act="dash">${icon('boot', 'ic ic-sm')} <span>Dash</span></button>
         <button type="button" class="ta-btn" data-act="dodge">${icon('shield', 'ic ic-sm')} <span>Dodge</span></button>
         <button type="button" class="ta-btn" data-act="help" hidden>${icon('droplet', 'ic ic-sm')} <span>Help</span></button>
         <button type="button" class="ta-btn ta-end" data-act="end">${icon('hourglass', 'ic ic-sm')} <span>End Turn</span></button>
       </div>
+      <div class="ta-features" data-feature-row hidden></div>
       <div class="turn-move" data-move-ft></div>
     </div>
 
@@ -196,8 +198,9 @@ export function mountHud(container: HTMLElement): () => void {
   const targetSelectEl = $<HTMLSelectElement>('[data-target-select]');
   const targetFeedbackEl = $('[data-target-feedback]');
   const moveFtEl = $('[data-move-ft]');
-  const cantripBtn = $<HTMLButtonElement>('[data-cantrip]');
-  const cantripNameEl = $('[data-cantrip-name]');
+  const spellSelectEl = $<HTMLSelectElement>('[data-spell-select]');
+  const castBtn = $<HTMLButtonElement>('[data-cast]');
+  const featureRowEl = $<HTMLElement>('[data-feature-row]');
   const moveToastEl = $<HTMLElement>('[data-move-toast]');
   const mmEl = $<HTMLElement>('[data-mm]');
   const mmCanvas = $<HTMLCanvasElement>('[data-mm-canvas]');
@@ -477,6 +480,8 @@ export function mountHud(container: HTMLElement): () => void {
   let iniCurIdx = 0;
   let selectedTargetId = '';
   let targetOptionsKey = '';
+  let spellOptionsKey = '';
+  let featureKeyLast = '';
 
   function updateTargetSelection(s: ReturnType<typeof useGame.getState>, me: TokenState | undefined) {
     const combatIds = new Set((s.initiative as { order?: string[] } | null)?.order || []);
@@ -507,7 +512,8 @@ export function mountHud(container: HTMLElement): () => void {
       ? `${target.name} · ${target.hp}/${target.hpMax} HP · ${distance} ft`
       : foes.length ? 'Choose a visible foe.' : 'No visible foes to target.';
     for (const button of turnbarEl.querySelectorAll<HTMLButtonElement>('.ta-btn')) {
-      const needsTarget = button.dataset.act === 'attack' || button.dataset.act === 'cantrip';
+      if (button.dataset.featureId) continue;   // feature buttons gate themselves
+      const needsTarget = button.dataset.act === 'attack' || button.dataset.act === 'cast';
       if (button.dataset.act !== 'end') button.disabled = actionUsed || (needsTarget && !target);
     }
     return target;
@@ -663,9 +669,97 @@ export function mountHud(container: HTMLElement): () => void {
     moveFtEl.textContent = `${Math.max(0, movementLimit - usedFt)}/${movementLimit} ft movement · ${me?.actionUsed ? 'action spent' : 'action ready'} · ${Math.max(0, me?.hp ?? 0)} hp`;
     // cantrip button if the server sheet has one
     const sheet = (me as any)?.sheet;
-    const cantrip = sheet?.spellcasting?.cantrips?.[0];
-    cantripBtn.hidden = !cantrip;
-    if (cantrip) cantripNameEl.textContent = String(cantrip);
+    // resource pips (mechanics overlay): Rage 2/2 · Second Wind 1/1 …
+    const res = sheet?.resources || {};
+    const pipText = Object.values(res as Record<string, { label?: string; cur: number; max: number }>)
+      .filter((p) => p && typeof p.cur === 'number' && p.max > 0)
+      .map((p) => `${p.label || '?'} ${p.cur}/${p.max}`)
+      .join(' · ');
+    if (pipText) moveFtEl.textContent += ` · ${pipText}`;
+
+    // ── spell selector: every known spell, with slot counts ──
+    const sc = sheet?.spellcasting;
+    const spellList: string[] = Array.isArray(sc?.spells) ? sc.spells.map(String) : [];
+    if (spellList.length) {
+      const spellKey = spellList.join('|') + '#' + JSON.stringify(sc.slots || {});
+      if (spellKey !== spellOptionsKey) {
+        spellOptionsKey = spellKey;
+        spellSelectEl.replaceChildren();
+        const slotText = (lvl: number): string => {
+          const b = (sc.slots as Record<string, { total: number; used: number }> | undefined)?.[String(lvl)];
+          if (!b) return '';
+          return ` (${b.total - b.used}/${b.total})`;
+        };
+        const levelOf = (name: string): number => {
+          const map = sc.spellsByLevel as Record<string, string[]> | undefined;
+          if (!map) return 0;
+          for (const [lvl, names] of Object.entries(map)) {
+            if ((names as string[]).includes(name)) return Number(lvl);
+          }
+          return 0;
+        };
+        const groups = new Map<number, string[]>();
+        for (const sp of spellList) {
+          const lvl = levelOf(sp);
+          if (!groups.has(lvl)) groups.set(lvl, []);
+          groups.get(lvl)!.push(sp);
+        }
+        for (const lvl of [...groups.keys()].sort((a, b) => a - b)) {
+          const cap = document.createElement('option');
+          cap.value = '';
+          cap.disabled = true;
+          cap.textContent = lvl === 0 ? 'Cantrips' : `${lvl}${lvl === 1 ? 'st' : lvl === 2 ? 'nd' : lvl === 3 ? 'rd' : 'th'} level${slotText(lvl)}`;
+          spellSelectEl.appendChild(cap);
+          for (const sp of groups.get(lvl)!) {
+            const opt = document.createElement('option');
+            opt.value = sp;
+            opt.textContent = `${sp}${lvl > 0 && slotText(lvl) === '' ? ' — no slots' : ''}`;
+            spellSelectEl.appendChild(opt);
+          }
+        }
+        spellSelectEl.selectedIndex = -1;
+      }
+      spellSelectEl.hidden = false;
+      castBtn.hidden = false;
+    } else {
+      spellSelectEl.hidden = true;
+      castBtn.hidden = true;
+    }
+
+    // ── feature buttons (mechanics overlay manifest) ──
+    const actions: Array<{ id: string; name: string; activation: string; resource?: string | null; resourceLabel?: string | null; summary?: string }> =
+      Array.isArray(sheet?.actions) ? sheet.actions : [];
+    const featureKey = JSON.stringify(actions) + '#' + me?.actionUsed + me?.bonusUsed + JSON.stringify(res);
+    if (featureKey !== featureKeyLast) {
+      featureKeyLast = featureKey;
+      featureRowEl.replaceChildren();
+      for (const fa of actions) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ta-btn ta-feature';
+        btn.dataset.featureId = fa.id;
+        btn.dataset.activation = fa.activation;
+        btn.dataset.resource = fa.resource || '';
+        const tag = fa.activation === 'bonus' ? ' bonus' : fa.activation === 'free' ? ' free' : fa.activation === 'reaction' ? ' reaction' : '';
+        const resLabel = fa.resource && (res as Record<string, { label?: string; cur: number; max: number } | undefined>)[fa.resource]
+          ? ` ${String((res as Record<string, { cur: number; max: number }>)[fa.resource].cur)}/${String((res as Record<string, { cur: number; max: number }>)[fa.resource].max)}`
+          : '';
+        btn.innerHTML = `${icon('sparkle', 'ic ic-sm')} <span>${fa.name}${tag}${resLabel}</span>`;
+        btn.title = fa.summary || fa.name;
+        featureRowEl.appendChild(btn);
+      }
+      featureRowEl.hidden = actions.length === 0;
+    }
+    // per-render enable/disable of feature buttons by economy + pools
+    for (const btn of featureRowEl.querySelectorAll<HTMLButtonElement>('.ta-feature')) {
+      const act = btn.dataset.activation;
+      const poolId = btn.dataset.resource;
+      const pool = poolId ? (res as Record<string, { cur: number }> | undefined)?.[poolId] : null;
+      const spent = pool ? pool.cur < 1 : false;
+      btn.disabled = spent ||
+        (act === 'action' && !!me?.actionUsed) ||
+        (act === 'bonus' && !!me?.bonusUsed);
+    }
     updateTargetSelection(s, me);
   }
 
@@ -1025,12 +1119,31 @@ export function mountHud(container: HTMLElement): () => void {
       const foe = s.tokens.find((token) => token.id === selectedTargetId && token.kind === 'monster' &&
         !token.hidden && token.hp > 0 && !token.deathSaves?.dead);
       if (act === 'attack' && foe) { sendAction({ kind: 'attack', targetId: foe.id }); return; }
-      if (act === 'cantrip') {
+      if (act === 'cast') {
         const sheet = (me as any)?.sheet;
-        const spell = sheet?.spellcasting?.cantrips?.[0];
-        if (spell && foe) sendAction({ kind: 'cast', spellId: spell, targetId: foe.id });
+        const spell = String(spellSelectEl.value || '');
+        if (!spell) return;
+        // spell level from the sheet's grouped list (server up-casts only on request)
+        let slotLevel: number | undefined = undefined;
+        const map = sheet?.spellcasting?.spellsByLevel as Record<string, string[]> | undefined;
+        if (map) {
+          for (const [lvl, names] of Object.entries(map)) {
+            if ((names as string[]).includes(spell)) { const n = Number(lvl); if (n > 0) slotLevel = n; break; }
+          }
+        }
+        // heal/buff spells target self (server allows allies later); the rest need the foe
+        const heals = /^(Cure Wounds|Healing Word|Bless|Mage Armor|Shield)$/i.test(spell);
+        const targetId = heals ? me.id : foe?.id;
+        if (targetId) sendAction({ kind: 'cast', spellId: spell, targetId, slotLevel });
       }
     });
+  });
+
+  // feature buttons (mechanics overlay) — delegated
+  featureRowEl.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.ta-feature');
+    if (!btn || btn.disabled) return;
+    sendAction({ kind: 'feature', featureId: btn.dataset.featureId });
   });
 
   // map registry (async fill)

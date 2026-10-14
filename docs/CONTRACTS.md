@@ -202,15 +202,29 @@ state = {
 ```
 dice.js:        rollDiceFormula(formula, rng?) -> {total, rolls, formula}|null
                 d20(mod?, {adv, dis}) -> {rolls, total, nat}
+Mechanics.js:   mechanics overlay runtime (beside the immutable SRD — see SCHEMA.md §5)
+                loadOverlay(), evaluateFormula(expr, ctx) -> number|null   // safe, no eval
+                initResources(sheet)  -> sheet.resources/.actions/.passives (idempotent)
+                featureActions(sheet), passivesFor(token), spendResource/recoverResources
 CharacterEngine: buildCharacter(def) -> Sheet   // abilities, proficiencies, HP, AC, attacks, spell slots
                 levelUp(sheet), xpForLevel(n)
+                shortRest/longRest -> + resourcesRecovered[] (+ wizard Arcane Recovery)
 CombatEngine:   rollInitiative(tokens, rng) -> order
                 beginTurn(state, tokenId) -> movement anchor + start-of-turn effects
                 resolveAction(state, actor, request, rng) -> {ok, result|reason}
+                                     // request.kind: attack|cast|feature|dash|dodge|disengage|help|ready|use
                 applyDamage/Heal, saves, concentration checks, death saves
+                opportunityAttacks(state, mover, fromX, fromZ) -> [{attackerId, weaponName}]
 MonsterAI:      chooseAction(state, monsterToken, srdMonster) -> ActionRequest
+                buildMonsterToken(indexEntry, overrides) -> token  // carries creatureType
 DirectorAI:     think(state, events) -> [dm:cmd]              // AI-DM
 ```
+Mechanics overlay integration: `resolveAction({kind:'feature', featureId})` executes
+compiled class features (mechanics_overlay.json); un-compiled features stay text on
+the sheet (fallback). Passive hooks ride attacks/saves/damage (Rage, fighting
+styles, Extra Attack, Halfling Lucky, Relentless Endurance, Uncanny Dodge…).
+Reaction-cast spells (Shield) bypass the turn gate; opportunity attacks auto-resolve
+via CombatDriver's `gm.onCombatMove` hook after every voluntary in-combat move.
 
 ## Session/invite flow
 - Server boots → one default session per process (v0): `POST /api/invite` → `{url}`.
