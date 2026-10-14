@@ -12,12 +12,19 @@
 //   the same portrait — safe for QA screenshots and the export→3D-rig handoff.
 // ═══════════════════════════════════════════════════════════════════════════
 
+export type Gender = 'masculine' | 'feminine';
 export type BodyType = 'slim' | 'normal' | 'heavy';
-export type FaceDecor = 'none' | 'scars' | 'runes' | 'warpaint';
+export type FaceDecor = 'none' | 'scars' | 'runes' | 'warpaint' | 'freckles' | 'skull';
 
 export interface LookState {
-  bodyType: BodyType; skinTone: number; hairStyle: number; hairColor: number;
-  cloakColor: number; eyeColor: number; faceDecor: FaceDecor;
+  gender?: Gender;
+  bodyType: BodyType;
+  skinTone: number;
+  hairStyle: number;
+  hairColor: number;
+  cloakColor: number;
+  eyeColor: number;
+  faceDecor: FaceDecor;
 }
 
 export interface PortraitOpts { race: string; class: string; look: LookState; seed?: number; }
@@ -32,21 +39,46 @@ export const SKIN_TONES: Tone[] = [
   { name: 'Olive Dusk',   light: '#c0a87e', base: '#998059', shadow: '#4f4128' },
   { name: 'Deep Umber',   light: '#8c6746', base: '#664629', shadow: '#2c1c10' },
   { name: 'Crypt Sallow', light: '#bcb7a0', base: '#918c74', shadow: '#46433a' },
+  { name: 'Sun Bronze',   light: '#df9e66', base: '#b87b46', shadow: '#5d3718' },
+  { name: 'Dark Ebony',   light: '#61402c', base: '#382417', shadow: '#150c07' },
+  { name: 'Drow Obsidian',light: '#423e4e', base: '#282630', shadow: '#100f14' },
+  { name: 'Ivory Pearl',  light: '#f7efe6', base: '#e5dacf', shadow: '#887d72' },
+  { name: 'Fiery Crimson',light: '#af4a47', base: '#843330', shadow: '#3c1211' },
+  { name: 'Orcish Moss',  light: '#809467', base: '#5e6e4a', shadow: '#28321e' },
 ];
+
 export const HAIR_COLORS: Tone[] = [
-  { name: 'Ink Black',   light: '#565664', base: '#26242e', shadow: '#0d0c12' },
-  { name: 'Ash Brown',   light: '#8f7a66', base: '#57452f', shadow: '#251b10' },
-  { name: 'Chestnut',    light: '#a06c40', base: '#6d4526', shadow: '#301a0c' },
-  { name: 'Copper',      light: '#cf8340', base: '#934d1f', shadow: '#421c07' },
-  { name: 'Bone Silver', light: '#ddd6c6', base: '#a79f8e', shadow: '#4f4a3f' },
-  { name: 'Ember Auburn', light: '#a85a30', base: '#732f16', shadow: '#2c0f05' },
+  { name: 'Ink Black',      light: '#565664', base: '#26242e', shadow: '#0d0c12' },
+  { name: 'Ash Brown',      light: '#8f7a66', base: '#57452f', shadow: '#251b10' },
+  { name: 'Chestnut',       light: '#a06c40', base: '#6d4526', shadow: '#301a0c' },
+  { name: 'Copper',         light: '#cf8340', base: '#934d1f', shadow: '#421c07' },
+  { name: 'Bone Silver',    light: '#ddd6c6', base: '#a79f8e', shadow: '#4f4a3f' },
+  { name: 'Ember Auburn',   light: '#a85a30', base: '#732f16', shadow: '#2c0f05' },
+  { name: 'Golden Wheat',   light: '#cbab69', base: '#ab8645', shadow: '#563e18' },
+  { name: 'Platinum Honey', light: '#eee5cf', base: '#d2c5a8', shadow: '#76684c' },
+  { name: 'Raven Jet',      light: '#353440', base: '#121118', shadow: '#050508' },
+  { name: 'Blood Crimson',  light: '#ba3636', base: '#8a1e1e', shadow: '#3a0808' },
+  { name: 'Void Amethyst',  light: '#695182', base: '#453358', shadow: '#1b1224' },
+  { name: 'Pale Frost',     light: '#e2e7ec', base: '#c8d0d6', shadow: '#6a7680' },
 ];
-export const HAIR_STYLES = ['Cropped', 'Topknot', 'Long', 'Braids', 'Shaved'];
+
+export const HAIR_STYLES = [
+  'Cropped', 'Topknot', 'Long', 'Braids', 'Shaved',
+  'High Ponytail', 'Flowing Locks', 'Twin Braids', 'Braided Chignon', 'Pixie Bob',
+];
+
+export const MALE_HAIR_STYLES = [0, 1, 2, 3, 4];
+export const FEMALE_HAIR_STYLES = [5, 6, 7, 8, 9];
+
 export const EYE_COLORS: { name: string; iris: string; glow: string }[] = [
-  { name: 'Ember', iris: '#c8781f', glow: '#ffcf7a' },
-  { name: 'Crypt', iris: '#3f7a72', glow: '#8fe3d4' },
-  { name: 'Steel', iris: '#6f879c', glow: '#cfe0ef' },
-  { name: 'Blood', iris: '#7c2422', glow: '#d05248' },
+  { name: 'Ember',    iris: '#c8781f', glow: '#ffcf7a' },
+  { name: 'Crypt',    iris: '#3f7a72', glow: '#8fe3d4' },
+  { name: 'Steel',    iris: '#6f879c', glow: '#cfe0ef' },
+  { name: 'Blood',    iris: '#7c2422', glow: '#d05248' },
+  { name: 'Emerald',  iris: '#2b783c', glow: '#6be384' },
+  { name: 'Void',     iris: '#6b3fa0', glow: '#c18ffd' },
+  { name: 'Gold',     iris: '#c29827', glow: '#ffe478' },
+  { name: 'Obsidian', iris: '#1a1a1e', glow: '#5a5a6a' },
 ];
 export const CLOAK_COLORS: Tone[] = [
   { name: 'Charcoal',   light: '#45484f', base: '#24262c', shadow: '#0b0c10' },
@@ -711,6 +743,93 @@ function paintHair(ctx: CanvasRenderingContext2D, rng: () => number, hair: Tone,
     lock(-1, -26, Math.min(shoulderY + 150 - (crownY + 30), 210), style === 3);
     lock(1, 30, Math.min(shoulderY + 150 - (crownY + 30), 200), style === 3);
     if (noHood) strands(10, crownY + 20, chinY + 30, halfW, 0.45);
+  } else if (style === 5) {
+    // high ponytail — pulled crown with long arching ponytail down the side
+    cap();
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(cx + halfW * 0.22, crownY - 14, halfW * 0.26, halfW * 0.2, 0.2, 0, Math.PI * 2);
+    ctx.fillStyle = hair.base; ctx.fill();
+    // flowing tail
+    ctx.beginPath();
+    ctx.moveTo(cx + halfW * 0.22, crownY - 14);
+    ctx.bezierCurveTo(cx + halfW * 0.95, crownY + 20, cx + halfW * 0.85, chinY + 30, cx + halfW * 0.65, shoulderY + 80);
+    ctx.bezierCurveTo(cx + halfW * 0.55, chinY + 50, cx + halfW * 0.45, crownY + 20, cx + halfW * 0.16, crownY - 8);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(cx, crownY, cx + halfW * 0.8, shoulderY + 80);
+    g.addColorStop(0, hair.light); g.addColorStop(0.5, hair.base); g.addColorStop(1, hair.shadow);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.restore();
+    strands(7, crownY + 10, chinY + 40, halfW, 0.4);
+  } else if (style === 6) {
+    // flowing locks — voluminous mane cascading past shoulders
+    cap();
+    ctx.save();
+    const cascade = (side: number) => {
+      ctx.beginPath();
+      const x0 = cx + side * halfW * 0.72;
+      ctx.moveTo(x0 - 16, crownY + 26);
+      ctx.bezierCurveTo(x0 + side * 28, crownY + 80, x0 + side * 34, shoulderY + 40, x0 + side * 14, shoulderY + 180);
+      ctx.lineTo(x0 - side * 8, shoulderY + 175);
+      ctx.bezierCurveTo(x0 + side * 8, shoulderY + 40, x0, crownY + 70, x0 - 12, crownY + 30);
+      ctx.closePath();
+      const g = ctx.createLinearGradient(x0 - 20, crownY + 26, x0 + side * 30, shoulderY + 180);
+      g.addColorStop(0, hair.light); g.addColorStop(0.5, hair.base); g.addColorStop(1, hair.shadow);
+      ctx.fillStyle = g; ctx.fill();
+    };
+    cascade(-1); cascade(1);
+    ctx.restore();
+    strands(12, crownY + 20, chinY + 60, halfW, 0.5);
+  } else if (style === 7) {
+    // twin braids — two distinct forward plaits
+    cap();
+    ctx.save();
+    const b = (side: number) => {
+      const x0 = cx + side * halfW * 0.68;
+      ctx.beginPath();
+      ctx.moveTo(x0 - 10, crownY + 30);
+      ctx.bezierCurveTo(x0 + side * 8, crownY + 90, x0 + side * 4, shoulderY + 70, x0, shoulderY + 150);
+      ctx.lineTo(x0 + 10, shoulderY + 150);
+      ctx.bezierCurveTo(x0 + side * 12 + 10, shoulderY + 70, x0 + side * 12, crownY + 90, x0 + 10, crownY + 30);
+      ctx.closePath();
+      ctx.fillStyle = hair.base; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 2.2;
+      for (let i = 1; i <= 6; i++) {
+        const y = crownY + 30 + (shoulderY + 120 - crownY) * (i / 7);
+        ctx.beginPath(); ctx.moveTo(x0 - 8, y - 4); ctx.lineTo(x0 + 8, y + 4); ctx.stroke();
+      }
+    };
+    b(-1); b(1);
+    ctx.restore();
+  } else if (style === 8) {
+    // braided chignon — sleek front into low coiled bun
+    cap();
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(cx, crownY + 12, halfW * 0.44, halfW * 0.32, 0, 0, Math.PI * 2);
+    ctx.fillStyle = hair.shadow; ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, crownY + 10, halfW * 0.28, 0, Math.PI * 2);
+    ctx.fillStyle = hair.base; ctx.fill();
+    ctx.strokeStyle = fade(hair.light, 0.4); ctx.lineWidth = 3; ctx.stroke();
+    ctx.restore();
+  } else if (style === 9) {
+    // pixie bob — jawline framing chic cropped bob
+    cap();
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx - halfW * 0.95, crownY + 30);
+    ctx.quadraticCurveTo(cx - halfW * 1.05, chinY - 4, cx - halfW * 0.6, chinY + 10);
+    ctx.lineTo(cx - halfW * 0.45, chinY - 6);
+    ctx.quadraticCurveTo(cx, crownY + 44, cx + halfW * 0.45, chinY - 6);
+    ctx.lineTo(cx + halfW * 0.6, chinY + 10);
+    ctx.quadraticCurveTo(cx + halfW * 1.05, chinY - 4, cx + halfW * 0.95, crownY + 30);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, crownY + 20, 0, chinY + 10);
+    g.addColorStop(0, hair.light); g.addColorStop(0.6, hair.base); g.addColorStop(1, hair.shadow);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.restore();
+    strands(6, crownY + 25, chinY - 5, halfW, 0.4);
   } else {
     // cropped — cap + short fringe over the brow
     cap();
@@ -818,6 +937,31 @@ function paintFaceDecor(ctx: CanvasRenderingContext2D, decor: FaceDecor, rng: ()
     const color = cls === 'Cleric' ? '#8a6a1f' : cls === 'Barbarian' ? '#7a1f1f' : '#7a1f1f';
     bar(eyeY - 2, 10, 0.5, color);
     bar(eyeY + 16, 7, 0.34, color);
+  } else if (decor === 'freckles') {
+    // stippled freckles across nose and cheekbones
+    ctx.fillStyle = 'rgba(78, 42, 22, 0.42)';
+    for (let i = 0; i < 45; i++) {
+      const rx = cx + (rng() * 2 - 1) * halfW * 0.55;
+      const ry = eyeY + 12 + (rng() * 2 - 1) * 14;
+      ctx.beginPath();
+      ctx.arc(rx, ry, 0.9 + rng() * 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (decor === 'skull') {
+    // ash bone paint around eyes and jaw
+    ctx.fillStyle = 'rgba(230, 225, 215, 0.55)';
+    ctx.beginPath();
+    ctx.arc(cx - halfW * 0.4, eyeY, halfW * 0.28, 0, Math.PI * 2);
+    ctx.arc(cx + halfW * 0.4, eyeY, halfW * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(20, 16, 14, 0.7)';
+    ctx.lineWidth = 2.4;
+    for (let i = -3; i <= 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(cx + i * 8, eyeY + headH * 0.28 - 6);
+      ctx.lineTo(cx + i * 8, eyeY + headH * 0.28 + 6);
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }

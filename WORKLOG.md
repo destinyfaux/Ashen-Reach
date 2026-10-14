@@ -1414,3 +1414,41 @@ Work Log:
 Stage Summary:
 - Combat now executes compiled SRD mechanics end to end: features, resources, fighting styles, Extra Attack, opportunity attacks, racial passives, 27 spells mechanical; un-compiled features stay text (fallback path). DM bypass/house-rule layer intentionally left for later per user.
 - Next candidates: spell-slot upcasting UI, ally-targeting for heals, Two-Weapon Fighting, grapple/shove, creatureType-driven immunities in MonsterAI choices, cover.
+
+---
+Task ID: 17
+Agent: senior software engineer
+Task: Visage & 3D Avatar Customization Overhaul — real-time 3D character viewport, expanded racial features, gender & body types, 10 hairstyles, facial markings, and multiplayer token replication.
+
+Work Log:
+- Solved disconnect between character creation visage options and live in-game 3D avatar.
+- Extended TokenLook (client/src/engine/types.ts): added gender, expanded bodyType (slim/normal/heavy/lean/standard/broad/tall), 10 hairstyles, eyeColor, faceDecor, race, subrace, charClass, raceScale, and anatomical traits (ears, horns, tail, tusks, beard).
+- Extended HumanoidRig (client/src/engine/rig/HumanoidRig.ts):
+  - Gender forms: masculine (wider clavicle/shoulders, athletic V-taper) vs feminine (narrower clavicle, wider hips, bust contouring).
+  - Frame & weight: slim (0.84x limb, 0.88x torso), normal, heavy (1.22x limb, 1.20x torso, 1.18x shoulder pads).
+  - Racial anatomy & scaling: pointed ears (elves), curving obsidian horns + sinuous tails (tieflings), woven braided beard (dwarves), lower tusks (orcs/goliaths), snout crests & horns (dragonborn), race stature scaling (0.75x small races like halflings/gnomes, 1.14x large races like goliaths/orcs).
+  - 10 distinct 3D hairstyles (5 masculine: short, topknot, long, braids, shaved; 5 feminine: ponytail, flowing locks, twin braids, chignon, pixie bob).
+  - Colored glowing irises and 3D facial markings (scars, runes, warpaint, freckles, skull paint).
+- Created Visage3DView (client/src/ui/create/visage3d.ts):
+  - Dedicated real-time WebGL Three.js character viewport with 360-degree orbit drag, pitch tilt, mouse wheel zoom, auto-rotation toggle, reset/front/face camera buttons.
+  - Multi-source lighting (ambient slate, warm golden key torchlight, cool rim light, ground ember bounce) and runic stone plinth.
+  - Procedural idle stance and breathing animation via Animator and cloth chain physics.
+- Updated Character Creation UI (client/src/ui/create/steps.ts & creation.ts & portrait.ts):
+  - Added [ 3D FIGURE ] / [ PAINTED PORTRAIT ] view toggle in both Visage and Oath review steps.
+  - Added Origin & Form (Masculine / Feminine) selector.
+  - Added Frame & Build (Slim / Normal / Heavy) selector.
+  - Added Hairstyle category filter tabs (Masculine (5), Feminine (5), All Styles (10)) with custom SVG icons for all 10 styles.
+  - Expanded palettes: 12 dark-fantasy skin tones, 12 hair colors, 8 soul eye colors, 6 cloak colors, 6 facial markings.
+  - Added Bloodline Traits summary card informing players of their race's physical traits.
+  - Updated CharacterDef validation to preserve gender and all 6 face decors.
+- Synchronized server and replication:
+  - GameManager.js mapLookToRig maps all 10 hairstyles, 12 skin tones, 12 hair colors, 8 eye colors, 6 cloak colors, gender, and facial decorations.
+  - Actors.ts correctly passes race, subrace, gender, and decor from server tokens/sheets to HumanoidRig.
+- Verification:
+  - npm run typecheck: 0 errors (clean strict TypeScript).
+  - npm run build (compile_applet): succeeded.
+  - node --test server/src/GameManager.test.js: all 26 subtests pass.
+  - tools/smoke.mjs: all test suites pass.
+
+Stage Summary:
+- Players now have an immersive, live 3D character creation forge where every customization option (gender form, frame, 10 hairstyles, skin tones, hair colors, glowing eye colors, face markings, and race traits like horns/ears/tails/tusks/beards) is previewable in real time and carries over seamlessly into the 3D multiplayer world.

@@ -900,20 +900,37 @@ export class GameManager {
   mapLookToRig(look) {
     if (!look || typeof look !== 'object') return null;
     const idx = (v, len) => (typeof v === 'number' && Number.isFinite(v) ? ((v % len) + len) % len : 0);
-    const SKIN = ['#cdb69e', '#a8a29b', '#b28a5f', '#998059', '#664629', '#918c74'];
-    const HAIR = ['#26242e', '#57452f', '#6d4526', '#934d1f', '#a79f8e', '#732f16'];
+    const SKIN = [
+      '#cdb69e', '#a8a29b', '#b28a5f', '#998059', '#664629', '#918c74',
+      '#b87b46', '#382417', '#282630', '#e5dacf', '#843330', '#5e6e4a'
+    ];
+    const HAIR = [
+      '#26242e', '#57452f', '#6d4526', '#934d1f', '#a79f8e', '#732f16',
+      '#ab8645', '#d2c5a8', '#121118', '#8a1e1e', '#453358', '#c8d0d6'
+    ];
     const CLOAK = ['#24262c', '#46301a', '#2a403c', '#3f1a19', '#38351f', '#373d47'];
-    // rig hair geometry understands short/long/topknot (+'none' = bare):
-    // Cropped→short, Topknot→topknot, Long→long, Braids→long, Shaved→none
-    const STYLE = ['short', 'topknot', 'long', 'long', 'none'];
+    const EYE = ['#c8781f', '#3f7a72', '#6f879c', '#7c2422', '#2b783c', '#6b3fa0', '#c29827', '#1a1a1e'];
+
+    // 10 hairstyles: 0..4 masculine/classic, 5..9 feminine
+    const STYLE = [
+      'short', 'topknot', 'long', 'braids', 'none',
+      'ponytail', 'flowing', 'twin_braids', 'chignon', 'bob'
+    ];
     const BODY = { slim: 'lean', normal: 'standard', heavy: 'broad' };
-    return {
+
+    const out = {
       bodyType: BODY[look.bodyType] || 'standard',
       skinTone: SKIN[idx(look.skinTone, SKIN.length)],
-      hair: STYLE[idx(look.hairStyle, STYLE.length)],
+      hair: STYLE[idx(look.hairStyle, STYLE.length)] || 'short',
       hairColor: HAIR[idx(look.hairColor, HAIR.length)],
       cloakColor: CLOAK[idx(look.cloakColor, CLOAK.length)],
     };
+
+    if (look.gender) out.gender = look.gender;
+    if (look.eyeColor !== undefined) out.eyeColor = EYE[idx(look.eyeColor, EYE.length)];
+    if (look.faceDecor && look.faceDecor !== 'none') out.faceDecor = look.faceDecor;
+
+    return out;
   }
 
   leave(userId) {

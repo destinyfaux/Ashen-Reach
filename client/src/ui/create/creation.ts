@@ -36,8 +36,9 @@ export interface CharacterDef {
   abilities: { str: number; dex: number; con: number; int: number; wis: number; cha: number };
   background: string;
   look: {
+    gender?: 'masculine' | 'feminine';
     bodyType: 'slim' | 'normal' | 'heavy'; skinTone: number; hairStyle: number; hairColor: number;
-    cloakColor: number; eyeColor: number; faceDecor: 'none' | 'scars' | 'runes' | 'warpaint';
+    cloakColor: number; eyeColor: number; faceDecor: 'none' | 'scars' | 'runes' | 'warpaint' | 'freckles' | 'skull';
   };
 }
 
@@ -291,6 +292,8 @@ export function validateCharacterDef(raw: unknown): { ok: boolean; def: Characte
   }
 
   const lookIn = (src.look ?? {}) as Record<string, unknown>;
+  const genders = ['masculine', 'feminine'];
+  const gender = genders.includes(String(lookIn.gender)) ? (lookIn.gender as CharacterDef['look']['gender']) : 'masculine';
   const bodyTypes = ['slim', 'normal', 'heavy'];
   const bodyType = bodyTypes.includes(String(lookIn.bodyType)) ? lookIn.bodyType as CharacterDef['look']['bodyType'] : 'normal';
   if (lookIn.bodyType !== undefined && !bodyTypes.includes(String(lookIn.bodyType))) errors.push('bodyType must be slim | normal | heavy.');
@@ -298,10 +301,11 @@ export function validateCharacterDef(raw: unknown): { ok: boolean; def: Characte
     const n = Math.round(Number(v));
     return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : 0;
   };
-  const faceDecors = ['none', 'scars', 'runes', 'warpaint'];
+  const faceDecors = ['none', 'scars', 'runes', 'warpaint', 'freckles', 'skull'];
   const faceDecor = faceDecors.includes(String(lookIn.faceDecor)) ? lookIn.faceDecor as CharacterDef['look']['faceDecor'] : 'none';
-  if (lookIn.faceDecor !== undefined && !faceDecors.includes(String(lookIn.faceDecor))) errors.push('faceDecor must be none | scars | runes | warpaint.');
+  if (lookIn.faceDecor !== undefined && !faceDecors.includes(String(lookIn.faceDecor))) errors.push('faceDecor must be none | scars | runes | warpaint | freckles | skull.');
   const look: CharacterDef['look'] = {
+    gender,
     bodyType,
     skinTone: clampIdx(lookIn.skinTone, SKIN_TONES.length - 1),
     hairStyle: clampIdx(lookIn.hairStyle, HAIR_STYLES.length - 1),

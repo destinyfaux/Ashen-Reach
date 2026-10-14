@@ -138,23 +138,29 @@ export class Actors {
       if (!a) {
         const seed = hashStr(t.id) ^ ((t as any).portraitSeed ?? 0);
         const look = { ...(t.look || {}), seed } as any;
+        const sheet = (t as any).sheet;
+        if (sheet?.race && !look.race) look.race = sheet.race;
+        if (sheet?.subrace && !look.subrace) look.subrace = sheet.subrace;
+        if (sheet?.look) {
+          if (sheet.look.gender && !look.gender) look.gender = sheet.look.gender;
+          if (sheet.look.faceDecor && !look.faceDecor) look.faceDecor = sheet.look.faceDecor;
+        }
         const group = new THREE.Group();
-        // one malformed token must never kill the whole sync again (the
-        // post-creation break: a bad look crashed HumanoidRig here, so the
-        // player figure, bindToken and camera follow all silently died)
         let rig: HumanoidRig;
         try {
+          const equipClass = sheet?.class || t.archetype;
           rig = new HumanoidRig(t.archetype, look);
-          buildEquipment(rig, t.archetype);
+          buildEquipment(rig, equipClass);
         } catch (e) {
           console.error('[actors] rig build failed for ' + t.id + ' — figure skipped, sync continues', e);
           continue;
         }
         group.add(rig.body);
 
+        const rScale = rig.raceScale || 1.0;
         // soft contact shadow grounding the figure
         const shadow = new THREE.Mesh(
-          new THREE.CircleGeometry(2.1, 24),
+          new THREE.CircleGeometry(2.1 * rScale, 24),
           new THREE.MeshBasicMaterial({
             color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false,
             alphaMap: softSprite()
@@ -170,7 +176,7 @@ export class Actors {
           ? new THREE.Color(t.color || '#c9a227')
           : new THREE.Color(0x7a1f1f);
         const ring = new THREE.Mesh(
-          new THREE.RingGeometry(1.85, 2.12, 40),
+          new THREE.RingGeometry(1.85 * rScale, 2.12 * rScale, 40),
           new THREE.MeshBasicMaterial({ color: ringColor, transparent: true, opacity: isLocal ? 0.5 : 0.28, depthWrite: false })
         );
         ring.rotation.x = -Math.PI / 2;
@@ -178,7 +184,7 @@ export class Actors {
         group.add(ring);
 
         const statusRing = new THREE.Mesh(
-          new THREE.RingGeometry(2.22, 2.46, 40),
+          new THREE.RingGeometry(2.22 * rScale, 2.46 * rScale, 40),
           new THREE.MeshBasicMaterial({ color: 0x8fe8b0, transparent: true, opacity: 0.6, depthWrite: false })
         );
         statusRing.rotation.x = -Math.PI / 2;
@@ -190,7 +196,7 @@ export class Actors {
         let lantern: THREE.PointLight | null = null;
         if (t.kind === 'player') {
           lantern = new THREE.PointLight(0xd8a85a, 95, 34, 1.8);
-          lantern.position.set(0, 5.2, 0.4);
+          lantern.position.set(0, 5.2 * rScale, 0.4 * rScale);
           group.add(lantern);
         }
 

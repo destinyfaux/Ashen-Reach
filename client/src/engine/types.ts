@@ -73,14 +73,27 @@ export interface MapDef {
 // Every field optional; producers may send partial data. Producers: character
 // creation UI (players), DM spawn / boss (monsters). Consumers: Actors.ts rig.
 export interface TokenLook {
-  bodyType?: 'lean' | 'standard' | 'broad' | 'tall'; // proportions preset (default 'standard')
-  skinTone?: string;      // hex, e.g. '#c9ac8e' — head/hands (default per archetype)
-  hair?: 'none' | 'short' | 'long' | 'topknot';      // hair style (default per archetype)
+  gender?: 'masculine' | 'feminine';
+  bodyType?: 'lean' | 'standard' | 'broad' | 'tall' | 'slim' | 'normal' | 'heavy';
+  skinTone?: string;      // hex, e.g. '#c9ac8e' — head/hands
+  hair?: string;          // hair style ('none' | 'short' | 'topknot' | 'long' | 'braids' | 'ponytail' | 'flowing' | 'twin_braids' | 'chignon' | 'bob')
+  hairStyleId?: number;
   hairColor?: string;     // hex
-  hoodUp?: boolean;       // cowl raised over the head (default per archetype)
+  eyeColor?: string;      // hex
+  faceDecor?: string;     // 'none' | 'scars' | 'runes' | 'warpaint' | 'freckles' | 'skull'
+  race?: string;
+  subrace?: string;
+  charClass?: string;
+  raceScale?: number;
+  ears?: 'pointed' | 'round';
+  horns?: boolean;
+  tail?: boolean;
+  tusks?: boolean;
+  beard?: boolean;
+  hoodUp?: boolean;       // cowl raised over the head
   cloakColor?: string;    // hex — cloak + hood cloth
   clothTint?: string;     // hex — tunic/legs base tint
-  seed?: number;          // deterministic micro-variation (height ±3%, cloth jitter)
+  seed?: number;          // deterministic micro-variation
 }
 export interface TokenView {
   id: string; kind: string; ownerId: string; name: string; color?: string;

@@ -17,8 +17,10 @@ import {
 import type { AbilityKey } from './gamedata';
 import {
   paintPortrait, hashString, SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS,
-  CLOAK_COLORS, LookState, BodyType, FaceDecor,
+  CLOAK_COLORS, LookState, BodyType, FaceDecor, Gender,
+  MALE_HAIR_STYLES, FEMALE_HAIR_STYLES,
 } from './portrait';
+import { Visage3DView } from './visage3d';
 import type { CharacterDef } from './creation';
 import {
   fetchSrdRace, fetchSrdClass, getCachedRace, getCachedClass,
@@ -60,7 +62,7 @@ export function defaultState(): CreateState {
     mode: 'pointbuy',
     base: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
     pool: [], rolled: false, dice: {},
-    look: { bodyType: 'normal', skinTone: 1, hairStyle: 0, hairColor: 1, cloakColor: 0, eyeColor: 0, faceDecor: 'none' },
+    look: { gender: 'masculine', bodyType: 'normal', skinTone: 1, hairStyle: 0, hairColor: 1, cloakColor: 0, eyeColor: 0, faceDecor: 'none' },
     background: '', equipChoices: {},
   };
 }
@@ -613,8 +615,99 @@ function stepFate(body: HTMLElement, ctx: StepCtx): void {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// STEP 4 — VISAGE (appearance + live portrait)
+// STEP 4 — VISAGE (appearance + live 3D figure & painted portrait)
 // ═════════════════════════════════════════════════════════════════════════════
+let activeVisageView: Visage3DView | null = null;
+let currentVisageMode: '3d' | 'painted' = '3d';
+let activeHairFilter: 'masculine' | 'feminine' | 'all' | null = null;
+
+function getRaceTraitsSummary(raceId: string): { title: string; desc: string } {
+  const r = (raceId || '').toLowerCase();
+  if (r.includes('elf') || r.includes('fairy')) {
+    return {
+      title: 'Elven Heritage',
+      desc: 'Elongated pointed ears contouring the brow, slender lithe frame, and agile poise.',
+    };
+  }
+  if (r.includes('tiefling') || r.includes('hexblood') || r.includes('satyr')) {
+    return {
+      title: 'Infernal Bloodline',
+      desc: 'Curved obsidian horns sweeping upward from the brow, sinuous tail, and glowing ember-infused irises.',
+    };
+  }
+  if (r.includes('dwarf')) {
+    return {
+      title: 'Dwarven Stoutness',
+      desc: 'Broad stocky frame, dense bone structure, and a full woven braided beard flowing over the chest.',
+    };
+  }
+  if (r.includes('orc') || r.includes('goliath') || r.includes('bugbear')) {
+    return {
+      title: 'Primal Might',
+      desc: 'Towering muscular frame (1.14x stature), heavy skull ridge, and protruding lower tusks.',
+    };
+  }
+  if (r.includes('halfling') || r.includes('gnome') || r.includes('goblin') || r.includes('kobold')) {
+    return {
+      title: 'Small Stature',
+      desc: 'Compact agile frame scaled down (0.75x) with quick nimble footwork.',
+    };
+  }
+  if (r.includes('dragon') || r.includes('lizard')) {
+    return {
+      title: 'Draconic Lineage',
+      desc: 'Rigid brow crest with horned ridges, draconic muzzle snout, and reptilian tail.',
+    };
+  }
+  return {
+    title: 'Mortal Form',
+    desc: 'Adaptable balanced frame, versatile athletic posture, and resilient natural physique.',
+  };
+}
+
+function renderPreviewFrame(s: CreateState, ctx: StepCtx, displayW: number, displayH: number): HTMLElement {
+  const col = h('div', { class: 'cr-portrait-col' });
+
+  // Toggle between 3D in-game figure and oil-paint portrait
+  const toggle = h('div', { class: 'cr-preview-toggle' },
+    h('button', {
+      type: 'button',
+      class: currentVisageMode === '3d' ? 'sel' : '',
+      onclick: () => {
+        if (currentVisageMode !== '3d') {
+          currentVisageMode = '3d';
+          ctx.update({});
+        }
+      },
+      text: '3D FIGURE',
+    }),
+    h('button', {
+      type: 'button',
+      class: currentVisageMode === 'painted' ? 'sel' : '',
+      onclick: () => {
+        if (currentVisageMode !== 'painted') {
+          currentVisageMode = 'painted';
+          ctx.update({});
+        }
+      },
+      text: 'PAINTED PORTRAIT',
+    }),
+  );
+
+  const frame = h('div', { class: 'cr-portrait-frame' });
+
+  if (currentVisageMode === '3d') {
+    const host = h('div', { class: 'cr-3d-host' });
+    activeVisageView = new Visage3DView(host, s, displayW, displayH);
+    frame.append(host);
+  } else {
+    frame.append(portraitCanvas(s, displayW));
+  }
+
+  col.append(toggle, frame);
+  return col;
+}
+
 function stepVisage(body: HTMLElement, ctx: StepCtx): void {
   const s = ctx.state;
   const look = s.look;
@@ -639,43 +732,113 @@ function stepVisage(body: HTMLElement, ctx: StepCtx): void {
 
   const styleGlyph = (i: number): SVGSVGElement => {
     const paths = [
-      '<path d="M5 9q7-8 14 0"/><path d="M5 9q2 3 7 3t7-3"/>',                              // cropped
-      '<circle cx="12" cy="7" r="3.4"/><path d="M8 10q4 5 8 0"/><path d="M12 10v7"/>',        // topknot
-      '<path d="M6 6q6-6 12 0"/><path d="M6 6q-2 8 1 14M18 6q2 8-1 14"/>',                    // long
-      '<path d="M6 6q6-6 12 0"/><path d="M7 7l-1.6 3.2L7 13l-1.6 3.2L7 19M17 7l1.6 3.2L17 13l1.6 3.2L17 19"/>', // braids
-      '<path d="M6 9q6-5 12 0"/>',                                                             // shaved
+      '<path d="M5 9q7-8 14 0"/><path d="M5 9q2 3 7 3t7-3"/>',                              // 0: Cropped
+      '<circle cx="12" cy="7" r="3.4"/><path d="M8 10q4 5 8 0"/><path d="M12 10v7"/>',        // 1: Topknot
+      '<path d="M6 6q6-6 12 0"/><path d="M6 6q-2 8 1 14M18 6q2 8-1 14"/>',                    // 2: Long
+      '<path d="M6 6q6-6 12 0"/><path d="M7 7l-1.6 3.2L7 13l-1.6 3.2L7 19M17 7l1.6 3.2L17 13l1.6 3.2L17 19"/>', // 3: Braids
+      '<path d="M6 9q6-5 12 0"/>',                                                             // 4: Shaved
+      '<circle cx="12" cy="7" r="3.2"/><path d="M14 6q5-2 6 5t-3 9"/><path d="M7 9q5-4 10 0"/>', // 5: High Ponytail
+      '<path d="M6 6q6-6 12 0"/><path d="M5 7q-2 7 2 13M19 7q2 7-2 13M9 8q3 8 0 12M15 8q-3 8 0 12"/>', // 6: Flowing Locks
+      '<path d="M7 6q5-5 10 0"/><path d="M7 9l-1 3 1 3-1 3 1 3M17 9l1 3-1 3 1 3-1 3"/>',      // 7: Twin Braids
+      '<circle cx="12" cy="14" r="4"/><path d="M6 9q6-6 12 0"/><circle cx="12" cy="14" r="1.8"/>', // 8: Braided Chignon
+      '<path d="M6 7q6-5 12 0"/><path d="M6 7q-2 6 2 9M18 7q2 6-2 9M12 7v4"/>',                // 9: Pixie Bob
     ];
     return svgEl(paths[i] || paths[0], { width: '26', height: '26' });
   };
 
-  const decorNames: Record<FaceDecor, string> = { none: 'Unmarked', scars: 'Scars', runes: 'Runes', warpaint: 'Warpaint' };
+  const decorNames: Record<FaceDecor, string> = {
+    none: 'Unmarked', scars: 'Scars', runes: 'Runes', warpaint: 'Warpaint',
+    freckles: 'Freckles', skull: 'Skull Paint',
+  };
+
+  const currentGender = look.gender || 'masculine';
+  const filterCat = activeHairFilter ?? currentGender;
+
+  const visibleHairIndices = filterCat === 'masculine'
+    ? MALE_HAIR_STYLES
+    : filterCat === 'feminine'
+      ? FEMALE_HAIR_STYLES
+      : HAIR_STYLES.map((_, i) => i);
+
+  const portraitCol = renderPreviewFrame(s, ctx, 300, 375);
+  portraitCol.append(
+    h('div', { class: 'cr-portrait-cap' },
+      h('div', { class: 'cr-portrait-name', text: s.name.trim() || 'The Nameless' }),
+      h('div', { class: 'cr-portrait-sub', text: `${s.race || '—'} · ${s.charClass || '—'}${s.subclass ? ` · ${s.subclass}` : ''}` })));
+
+  const raceTrait = getRaceTraitsSummary(s.race);
 
   body.append(
     h('div', { class: 'cr-cols cr-visage' },
-      h('div', { class: 'cr-portrait-col' },
-        h('div', { class: 'cr-portrait-frame' }, portraitCanvas(s, 300)),
-        h('div', { class: 'cr-portrait-cap' },
-          h('div', { class: 'cr-portrait-name', text: s.name.trim() || 'The Nameless' }),
-          h('div', { class: 'cr-portrait-sub', text: `${s.race || '—'} · ${s.charClass || '—'}${s.subclass ? ` · ${s.subclass}` : ''}` }))),
+      portraitCol,
       h('div', { class: 'cr-main cr-visage-controls' },
-        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Frame' }),
-          seg<BodyType>([{ v: 'slim', label: 'Slim' }, { v: 'normal', label: 'Normal' }, { v: 'heavy', label: 'Heavy' }],
-            () => look.bodyType, (v) => setLook({ bodyType: v }))),
-        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Skin — tones of the ash' }),
+        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Origin & Form' }),
+          seg<Gender>([
+            { v: 'masculine', label: 'Masculine', sub: 'Athletic V-Taper' },
+            { v: 'feminine', label: 'Feminine', sub: 'Contoured Silhouette' },
+          ],
+          () => currentGender,
+          (v) => {
+            activeHairFilter = v;
+            const newHair = v === 'feminine'
+              ? (look.hairStyle < 5 ? 5 : look.hairStyle)
+              : (look.hairStyle >= 5 ? 0 : look.hairStyle);
+            setLook({ gender: v, hairStyle: newHair });
+          })),
+        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Frame & Build' }),
+          seg<BodyType>([
+            { v: 'slim', label: 'Slim', sub: 'Leaner Stature' },
+            { v: 'normal', label: 'Normal', sub: 'Balanced Athletic' },
+            { v: 'heavy', label: 'Heavy', sub: 'Broad & Powerful' },
+          ],
+          () => look.bodyType, (v) => setLook({ bodyType: v }))),
+        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Skin — Tones of the Reach' }),
           swatches(SKIN_TONES, () => look.skinTone, (i) => setLook({ skinTone: i }))),
-        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Hair' }),
-          h('div', { class: 'cr-style-cards' }, ...HAIR_STYLES.map((name, i) =>
-            h('button', { class: `cr-style-card ${look.hairStyle === i ? 'sel' : ''}`, title: name, onclick: () => setLook({ hairStyle: i }) },
-              styleGlyph(i), h('span', { text: name }))))),
+        h('div', { class: 'cr-ctrl' },
+          h('div', { class: 'cr-label', text: 'Hairstyle' }),
+          h('div', { class: 'cr-hair-filters' },
+            h('button', {
+              type: 'button',
+              class: `cr-hair-filter ${filterCat === 'masculine' ? 'sel' : ''}`,
+              onclick: () => { activeHairFilter = 'masculine'; ctx.update({}); },
+              text: 'Masculine (5)',
+            }),
+            h('button', {
+              type: 'button',
+              class: `cr-hair-filter ${filterCat === 'feminine' ? 'sel' : ''}`,
+              onclick: () => { activeHairFilter = 'feminine'; ctx.update({}); },
+              text: 'Feminine (5)',
+            }),
+            h('button', {
+              type: 'button',
+              class: `cr-hair-filter ${filterCat === 'all' ? 'sel' : ''}`,
+              onclick: () => { activeHairFilter = 'all'; ctx.update({}); },
+              text: 'All Styles (10)',
+            }),
+          ),
+          h('div', { class: 'cr-style-cards' }, ...visibleHairIndices.map((i) => {
+            const name = HAIR_STYLES[i];
+            return h('button', {
+              class: `cr-style-card ${look.hairStyle === i ? 'sel' : ''}`,
+              title: name,
+              onclick: () => setLook({ hairStyle: i }),
+            },
+              styleGlyph(i),
+              h('span', { text: name }));
+          }))),
         h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Hair Color' }),
           swatches(HAIR_COLORS, () => look.hairColor, (i) => setLook({ hairColor: i }))),
-        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Eyes — what catches the light' }),
+        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Eyes — Soul Light' }),
           swatches(EYE_COLORS, () => look.eyeColor, (i) => setLook({ eyeColor: i }))),
-        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Cloak' }),
+        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Cloak & Hood Cloth' }),
           swatches(CLOAK_COLORS, () => look.cloakColor, (i) => setLook({ cloakColor: i }))),
-        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Face Decor' }),
-          seg<FaceDecor>((['none', 'scars', 'runes', 'warpaint'] as FaceDecor[]).map((v) => ({ v, label: decorNames[v] })),
-            () => look.faceDecor, (v) => setLook({ faceDecor: v }))))));
+        h('div', { class: 'cr-ctrl' }, h('div', { class: 'cr-label', text: 'Face Markings' }),
+          seg<FaceDecor>((['none', 'scars', 'runes', 'warpaint', 'freckles', 'skull'] as FaceDecor[]).map((v) => ({ v, label: decorNames[v] })),
+            () => look.faceDecor, (v) => setLook({ faceDecor: v }))),
+        h('div', { class: 'cr-racial-traits' },
+          h('div', { class: 'cr-racial-traits-title', text: `Bloodline Traits: ${raceTrait.title}` }),
+          h('div', { class: 'cr-racial-traits-body', text: raceTrait.desc })),
+      )));
 
   function setLook(patch: Partial<LookState>) { ctx.update({ look: { ...look, ...patch } }); }
 }
@@ -775,13 +938,19 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
 
   const equipTexts = chosenEquipTexts(s);
 
+  const decorNames: Record<FaceDecor, string> = {
+    none: 'unmarked', scars: 'battle scars', runes: 'ember runes',
+    warpaint: 'warpaint slashes', freckles: 'freckles', skull: 'skull paint',
+  };
+
   const lookChips = [
-    chip(s.look.bodyType, ''),
+    chip(s.look.gender === 'feminine' ? 'feminine form' : 'masculine form', 'gold'),
+    chip(`${s.look.bodyType} build`),
     chip(SKIN_TONES[s.look.skinTone % SKIN_TONES.length].name),
     chip(`${HAIR_STYLES[s.look.hairStyle % HAIR_STYLES.length]} hair, ${HAIR_COLORS[s.look.hairColor % HAIR_COLORS.length].name}`),
     chip(`${EYE_COLORS[s.look.eyeColor % EYE_COLORS.length].name} eyes`),
     chip(`${CLOAK_COLORS[s.look.cloakColor % CLOAK_COLORS.length].name} cloak`),
-    chip(s.look.faceDecor === 'none' ? 'unmarked face' : s.look.faceDecor),
+    chip(decorNames[s.look.faceDecor] || s.look.faceDecor),
   ];
 
   const sheet = h('div', { class: 'cr-sheet' },
@@ -829,13 +998,15 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
         ...equipTexts.map((e) => h('li', { text: e })),
         ...(bg ? bg.equipment.map((e) => h('li', { text: e })) : []))));
 
+  const oathCol = renderPreviewFrame(s, ctx, 240, 300);
+  oathCol.append(
+    h('div', { class: 'cr-portrait-cap' },
+      h('div', { class: 'cr-portrait-name', text: s.name.trim() || 'The Nameless' }),
+      h('div', { class: 'cr-lookchips' }, ...lookChips)));
+
   body.append(
     h('div', { class: 'cr-cols cr-oath' },
-      h('div', { class: 'cr-portrait-col' },
-        h('div', { class: 'cr-portrait-frame' }, portraitCanvas(s, 240)),
-        h('div', { class: 'cr-portrait-cap' },
-          h('div', { class: 'cr-portrait-name', text: s.name.trim() || 'The Nameless' }),
-          h('div', { class: 'cr-lookchips' }, ...lookChips))),
+      oathCol,
       h('div', { class: 'cr-main' },
         h('div', { class: 'cr-oath-actions' },
           h('button', { class: 'cr-btn cr-btn-ghost', onclick: () => ctx.exportJSON() }, icon('download'), 'EXPORT JSON'),
@@ -861,6 +1032,10 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
 // dispatcher
 // ═════════════════════════════════════════════════════════════════════════════
 export function renderStepBody(body: HTMLElement, ctx: StepCtx): void {
+  if (activeVisageView) {
+    activeVisageView.dispose();
+    activeVisageView = null;
+  }
   body.replaceChildren();
   switch (ctx.state.step) {
     case 0: stepOrigin(body, ctx); break;

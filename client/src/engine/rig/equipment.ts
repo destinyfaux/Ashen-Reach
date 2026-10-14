@@ -188,7 +188,7 @@ function glowSprite(color: number, scale: number): THREE.Sprite {
   return s;
 }
 
-const SETS: Record<string, { main: string; off: string | null; mainTrail: boolean }> = {
+const BASE_SETS: Record<string, { main: string; off: string | null; mainTrail: boolean }> = {
   warden: { main: 'longsword', off: 'kite', mainTrail: true },
   shadowdancer: { main: 'dagger', off: 'dagger', mainTrail: true },
   ashen_mage: { main: 'staff', off: 'tome', mainTrail: false },
@@ -197,9 +197,18 @@ const SETS: Record<string, { main: string; off: string | null; mainTrail: boolea
   wraith: { main: '', off: null, mainTrail: false },
 };
 
+const CLASS_MAP: Record<string, string> = {
+  fighter: 'warden', paladin: 'warden', barbarian: 'warden',
+  rogue: 'shadowdancer', ranger: 'shadowdancer', monk: 'shadowdancer',
+  wizard: 'ashen_mage', sorcerer: 'ashen_mage', warlock: 'ashen_mage', artificer: 'ashen_mage',
+  cleric: 'pale_priest', druid: 'pale_priest', bard: 'pale_priest',
+};
+
 /** attach the archetype's equipment to the rig's hand anchors */
 export function buildEquipment(rig: HumanoidRig, archetype: string): void {
-  const set = SETS[archetype] ?? SETS.warden;
+  const norm = (archetype || 'warden').toLowerCase();
+  const setKey = BASE_SETS[norm] ? norm : (CLASS_MAP[norm] ?? 'warden');
+  const set = BASE_SETS[setKey] ?? BASE_SETS.warden;
   if (!set.main) return;
   const mat = cloneMat(metalMat(0xffffff, 0.45, 0.7));  // vertex colours carry the hues
 

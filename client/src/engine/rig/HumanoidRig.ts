@@ -64,23 +64,66 @@ const BASE: Proportions = {
   limbR: 1, torsoW: 1, skullScale: 1, shoulderPad: 0.3,
 };
 
-function presetFor(bodyType: string, jitter: number): Proportions {
+function presetFor(bodyType: string, gender: string, race: string, jitter: number): { prop: Proportions; raceScale: number } {
   const p = { ...BASE };
   const j = (v: number) => v * jitter;
-  if (bodyType === 'lean') {
-    p.clavX = 0.22; p.armDx = 0.48; p.limbR = 0.82; p.torsoW = 0.9;
-    p.pelvisY = j(3.12); p.shoulderPad = 0.26;
-  } else if (bodyType === 'broad') {
-    p.clavX = 0.3; p.armDx = 0.63; p.limbR = 1.16; p.torsoW = 1.12;
-    p.pelvisY = j(3.22); p.shoulderPad = 0.34;
+  const raceLow = (race || '').toLowerCase();
+  
+  // ── 1. Race scaling & frame baseline ─────────────────────────────────────────
+  let raceScale = 1.0;
+  if (raceLow.includes('halfling') || raceLow.includes('gnome') || raceLow.includes('goblin') || raceLow.includes('kobold') || raceLow.includes('fairy')) {
+    raceScale = 0.72; // small races naturally shrunk down
+    p.skullScale = 1.12;
+  } else if (raceLow.includes('dwarf')) {
+    raceScale = 0.84; // stocky dwarven stature
+    p.torsoW = 1.25;
+    p.limbR = 1.2;
+    p.clavX = 0.3;
+    p.armDx = 0.62;
+    p.shoulderPad = 0.35;
+  } else if (raceLow.includes('goliath') || raceLow.includes('orc') || raceLow.includes('firbolg') || raceLow.includes('bugbear')) {
+    raceScale = 1.14; // tall/powerful martial frames
+    p.torsoW = 1.12;
+    p.limbR = 1.1;
+  }
+
+  // ── 2. Gender form differences ──────────────────────────────────────────────
+  if (gender === 'feminine') {
+    p.clavX = Math.min(p.clavX, 0.23);
+    p.armDx = Math.min(p.armDx, 0.48);
+    p.hipDx = Math.max(p.hipDx, 0.38); // wider hips relative to shoulders
+    p.torsoW *= 0.94;
+    p.limbR *= 0.92;
+    p.shoulderPad *= 0.88;
+  } else {
+    // masculine / default
+    p.clavX = Math.max(p.clavX, 0.28);
+    p.armDx = Math.max(p.armDx, 0.58);
+    p.hipDx = Math.min(p.hipDx, 0.34); // athletic V-taper
+  }
+
+  // ── 3. Frame / weight variations ───────────────────────────────────────────
+  if (bodyType === 'lean' || bodyType === 'slim') {
+    p.limbR *= 0.84;
+    p.torsoW *= 0.88;
+    p.pelvisY = j(3.12);
+    p.shoulderPad *= 0.85;
+  } else if (bodyType === 'broad' || bodyType === 'heavy') {
+    p.limbR *= 1.22;
+    p.torsoW *= 1.20;
+    p.pelvisY = j(3.22);
+    p.shoulderPad *= 1.18;
   } else if (bodyType === 'tall') {
-    p.clavX = 0.25; p.armDx = 0.53;
-    p.pelvisY = j(3.4); p.thigh = 1.58; p.shin = 1.42; p.upperArm = 1.28; p.forearm = 1.18;
-    p.limbR = 0.94; p.torsoW = 0.94;
+    p.pelvisY = j(3.38);
+    p.thigh = 1.58;
+    p.shin = 1.42;
+    p.upperArm = 1.28;
+    p.forearm = 1.18;
   } else {
     p.pelvisY = j(3.18);
   }
-  return p;
+
+  return { prop: p, raceScale };
 }
 
 // deterministic micro-variation from a seed (xorshift-ish)
@@ -99,6 +142,10 @@ function templates(): Record<string, THREE.Material> {
     cloth: clothMat(0xffffff),       // tunic/legs/hood — colour per actor
     skin: skinMat(0xffffff),         // head/hands — tone per actor
     hair: clothMat(0xffffff),        // hair — colour per actor
+    eyes: glowMat(0xffffff),         // colored glowing irises
+    decor: clothMat(0xffffff),        // facial warpaint/scars/runes
+    horn: metalMat(0x2d2420, 0.2, 0.8), // tiefling horns / claws
+    tusk: boneMat(PAL.bone),         // orc tusks
     leather: leatherMat(),
     metal: metalMat(PAL.iron, 0.5, 0.62),
     bone: boneMat(PAL.bone),
@@ -395,6 +442,7 @@ export class HumanoidRig {
   isSkeleton: boolean;
   hasCloak: boolean;
   topY: number;                      // crown height for plaque / screen pos
+  raceScale: number = 1.0;
   palmSprite: THREE.Sprite | null = null;   // spell ember (off hand)
   innerGlow: THREE.Sprite | null = null;    // wraith core glow
   private chains: ClothChain[] = [];
@@ -413,25 +461,33 @@ export class HumanoidRig {
     let bodyType = look.bodyType ?? 'standard';
     if (this.isWraith) bodyType = 'tall';
     if (this.isSkeleton) bodyType = 'lean';
-    this.prop = presetFor(bodyType, jitter);
+    const gender = look.gender ?? 'masculine';
+    const race = look.race ?? '';
+    const preset = presetFor(bodyType, gender, race, jitter);
+    this.prop = preset.prop;
+    this.raceScale = preset.raceScale;
     if (this.isSkeleton) { this.prop.limbR = 0.52; this.prop.torsoW = 0.86; this.prop.skullScale = 1.14; }
     if (this.isWraith) { this.prop.limbR = 0.5; this.prop.torsoW = 0.8; this.prop.pelvisY += 1.05; }
     const P = this.prop;
 
     // ── skeleton (bind pose: limbs straight, arms/legs slightly splayed) ──
     this.buildBones();
+    if (this.raceScale !== 1.0) {
+      this.body.scale.setScalar(this.raceScale);
+    }
 
-    // ── body geometry (shared, cached per archetype|bodyType|hair|hood|jitter) ──
+    // ── body geometry (shared, cached per archetype|gender|bodyType|hair|race|hood|decor|jitter) ──
     const T = templates();
     const hair = look.hair ?? (this.isSkeleton || this.isWraith ? 'none' : 'short');
     const hoodUp = look.hoodUp ?? (archetype === 'shadowdancer' || this.isWraith || this.isSkeleton);
-    const cacheKey = `${archetype}|${bodyType}|${hair}|${hoodUp ? 1 : 0}|${jitterBucket}`;
+    const decor = look.faceDecor ?? 'none';
+    const cacheKey = `${archetype}|${gender}|${bodyType}|${hair}|${race}|${hoodUp ? 1 : 0}|${decor}|${jitterBucket}`;
     let cached = HumanoidRig.bodyCache.get(cacheKey);
     if (!cached) {
       const f = new PartFactory(this.joints);
       if (this.isWraith) this.wraithParts(f, T);
       else if (this.isSkeleton) this.skeletonParts(f, T);
-      else this.humanoidParts(f, T, { hair, hoodUp });
+      else this.humanoidParts(f, T, { gender, hair, hoodUp, race, faceDecor: decor });
       cached = { geoms: f.finish() };
       HumanoidRig.bodyCache.set(cacheKey, cached);
     }
@@ -440,8 +496,16 @@ export class HumanoidRig {
     const clothColor = parseHex(look.clothTint, ARCH_CLOTH[archetype] ?? 0x33383f);
     const skinColor = parseHex(look.skinTone, this.isSkeleton ? PAL.bone : (this.isWraith ? 0xb8c4be : PAL.skinAshen));
     const hairColor = parseHex(look.hairColor, HAIR_CHOICES[Math.floor(hashSeed(seed + 31) * HAIR_CHOICES.length)]);
+    const eyeColor = parseHex(look.eyeColor, 0xc8781f);
+    let decorColor = 0x7a1f1f;
+    if (decor === 'scars') decorColor = 0xba766c;
+    else if (decor === 'runes') decorColor = 0xffa040;
+    else if (decor === 'skull') decorColor = 0xdad5ca;
+    else if (decor === 'freckles') decorColor = 0x5c3822;
+
     const roleColor: Record<string, number | null> = {
       cloth: clothColor, skin: skinColor, hair: hairColor,
+      eyes: eyeColor, decor: decorColor, horn: 0x241d1a, tusk: PAL.bone,
       leather: null, metal: null, bone: null, rag: null,
       eyesSkel: null, eyesWraith: null, void: null, tatter: null,
     };
@@ -514,8 +578,8 @@ export class HumanoidRig {
       this.bones[B.SPINE2].add(this.innerGlow);
     }
 
-    this.topY = this.joints[B.HEAD].y + 0.62 * P.skullScale + (hoodUp ? 0.18 : 0);
-    this.topY = Math.max(this.topY, 5.7);
+    this.topY = (this.joints[B.HEAD].y + 0.62 * P.skullScale + (hoodUp ? 0.18 : 0)) * this.raceScale;
+    this.topY = Math.max(this.topY, 3.8 * this.raceScale);
   }
 
   private addChain(bone: THREE.Bone, anchor: THREE.Vector3, segs: number, len: number, w: number, mat: THREE.Material, taper = 0.32) {
@@ -572,7 +636,7 @@ export class HumanoidRig {
   }
 
   // ── body part recipes (bind space) ─────────────────────────────────────────
-  private humanoidParts(f: PartFactory, T: Record<string, THREE.Material>, cfg: { hair: string; hoodUp: boolean }) {
+  private humanoidParts(f: PartFactory, T: Record<string, THREE.Material>, cfg: { gender: string; hair: string; hoodUp: boolean; race: string; faceDecor: string }) {
     const J = this.joints, P = this.prop;
     const lerp = (a: THREE.Vector3, b: THREE.Vector3, t: number) => a.clone().lerp(b, t);
     const shade = (m: number) => new THREE.Color(m, m, m);
@@ -583,6 +647,15 @@ export class HumanoidRig {
     // torso: tunic over belly + chest (broad shoulders, tapered waist)
     f.capsule(waist, chest, 0.42 * P.torsoW, T.cloth, { sx: 1.12, sz: 0.86 });
     f.capsule(chest, lerp(J[B.SPINE2], J[B.NECK], 0.8), 0.5 * P.torsoW, T.cloth, { sx: 1.18, sz: 0.82, tint: shade(0.96) });
+
+    // feminine bust contouring
+    if (cfg.gender === 'feminine') {
+      f.sphere(chest.clone().add(V(0.16 * P.torsoW, 0.04, 0.35)), 0.22 * P.torsoW, T.cloth,
+        { sx: 1.05, sy: 0.92, sz: 1.15, tint: shade(0.96), bias: { [B.SPINE2]: 8 } });
+      f.sphere(chest.clone().add(V(-0.16 * P.torsoW, 0.04, 0.35)), 0.22 * P.torsoW, T.cloth,
+        { sx: 1.05, sy: 0.92, sz: 1.15, tint: shade(0.96), bias: { [B.SPINE2]: 8 } });
+    }
+
     // tunic skirt + hip wrap
     f.tube(V(0, J[B.PELVIS].y + 0.28, 0), 0.44 * P.torsoW, 0.55 * P.torsoW, 0.62, T.cloth, { tint: shade(0.8) });
     f.tube(V(0, J[B.PELVIS].y - 0.18, 0), 0.5 * P.torsoW, 0.6 * P.torsoW, 0.78, T.cloth, { tint: shade(0.66) });
@@ -640,21 +713,180 @@ export class HumanoidRig {
     f.box(H.clone().add(V(0, 0.1 * S, 0.31 * S)), V(0.4, 0.075, 0.12), T.skin, { bias: { [B.HEAD]: 8 } });
     f.box(H.clone().add(V(0, -0.24 * S, 0.13 * S)), V(0.26, 0.2, 0.3), T.skin, { bias: { [B.HEAD]: 8 } });
     f.box(H.clone().add(V(0, -0.05 * S, 0.36 * S)), V(0.075, 0.12, 0.1), T.skin, { bias: { [B.HEAD]: 8 } });
+
+    // eyes with colored irises
     for (const ex of [-0.115, 0.115]) {
-      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.3 * S)), 0.042, T.void, { bias: { [B.HEAD]: 50 } });
+      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.29 * S)), 0.046, T.void, { bias: { [B.HEAD]: 50 } });
+      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.32 * S)), 0.034, T.eyes, { bias: { [B.HEAD]: 50 } });
+      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.338 * S)), 0.016, T.void, { bias: { [B.HEAD]: 50 } });
     }
-    // hair
-    if (cfg.hair === 'short' || cfg.hair === 'long' || cfg.hair === 'topknot') {
+
+    // ── racial anatomical features ──────────────────────────────────────────
+    const raceLow = (cfg.race || '').toLowerCase();
+    const isElf = raceLow.includes('elf') || raceLow.includes('fairy');
+    const isTiefling = raceLow.includes('tiefling') || raceLow.includes('hexblood') || raceLow.includes('satyr');
+    const isDwarf = raceLow.includes('dwarf');
+    const isOrc = raceLow.includes('orc') || raceLow.includes('goliath');
+    const isDragon = raceLow.includes('dragon') || raceLow.includes('lizard') || raceLow.includes('kobold');
+    const hasTail = isTiefling || raceLow.includes('lizard') || raceLow.includes('tabaxi');
+
+    // Pointed ears (Elves)
+    if (isElf) {
+      for (const side of [1, -1]) {
+        f.capsule(
+          H.clone().add(V(side * 0.34 * S, 0.02 * S, -0.02 * S)),
+          H.clone().add(V(side * 0.58 * S, 0.22 * S, -0.22 * S)),
+          0.065 * S,
+          T.skin,
+          { sx: 0.5, sz: 1.1, bias: { [B.HEAD]: 40 } }
+        );
+      }
+    }
+
+    // Horns (Tieflings)
+    if (isTiefling) {
+      for (const side of [1, -1]) {
+        const h0 = H.clone().add(V(side * 0.18 * S, 0.26 * S, 0.16 * S));
+        const h1 = H.clone().add(V(side * 0.28 * S, 0.48 * S, 0.02 * S));
+        const h2 = H.clone().add(V(side * 0.36 * S, 0.68 * S, -0.16 * S));
+        f.capsule(h0, h1, 0.08 * S, T.horn, { bias: { [B.HEAD]: 40 } });
+        f.capsule(h1, h2, 0.055 * S, T.horn, { bias: { [B.HEAD]: 40 } });
+      }
+    }
+
+    // Tusks (Orcs)
+    if (isOrc) {
+      for (const side of [1, -1]) {
+        const t0 = H.clone().add(V(side * 0.12 * S, -0.24 * S, 0.28 * S));
+        const t1 = H.clone().add(V(side * 0.14 * S, -0.08 * S, 0.35 * S));
+        f.capsule(t0, t1, 0.038 * S, T.tusk, { bias: { [B.HEAD]: 40 } });
+      }
+    }
+
+    // Dwarven full braided beard
+    if (isDwarf) {
+      const b0 = H.clone().add(V(0, -0.16 * S, 0.24 * S));
+      const b1 = H.clone().add(V(0, -0.58 * S, 0.32 * S));
+      f.capsule(b0, b1, 0.22 * S, T.hair, { sx: 1.25, sz: 0.9, bias: { [B.HEAD]: 25, [B.NECK]: 15 } });
+      for (const side of [1, -1]) {
+        f.capsule(
+          H.clone().add(V(side * 0.14 * S, -0.38 * S, 0.3 * S)),
+          H.clone().add(V(side * 0.16 * S, -0.85 * S, 0.32 * S)),
+          0.075 * S,
+          T.hair,
+          { bias: { [B.HEAD]: 15, [B.NECK]: 20 } }
+        );
+      }
+    }
+
+    // Tail (Tieflings / Lizards)
+    if (hasTail) {
+      let tPos = V(0, J[B.PELVIS].y - 0.1, -0.32);
+      const tSegs = [
+        V(0, J[B.PELVIS].y - 0.45, -0.55),
+        V(0, J[B.PELVIS].y - 0.88, -0.72),
+        V(0.08, J[B.PELVIS].y - 1.25, -0.65),
+        V(0.12, J[B.PELVIS].y - 1.48, -0.42),
+      ];
+      for (let i = 0; i < tSegs.length; i++) {
+        const next = tSegs[i];
+        const r = 0.08 - i * 0.012;
+        f.capsule(tPos, next, Math.max(0.03, r), T.horn, { bias: { [B.PELVIS]: 30 } });
+        tPos = next;
+      }
+    }
+
+    // Dragonborn snout & crest
+    if (isDragon) {
+      f.box(H.clone().add(V(0, -0.06 * S, 0.42 * S)), V(0.24 * S, 0.16 * S, 0.24 * S), T.skin, { bias: { [B.HEAD]: 40 } });
+      for (let i = 0; i < 3; i++) {
+        f.box(H.clone().add(V(0, (0.32 + i * 0.08) * S, (-0.05 - i * 0.12) * S)), V(0.06 * S, 0.14 * S, 0.12 * S),
+          T.horn, { bias: { [B.HEAD]: 40 } });
+      }
+    }
+
+    // ── 3D facial markings ──────────────────────────────────────────────────
+    if (cfg.faceDecor === 'scars') {
+      f.box(H.clone().add(V(0.14 * S, 0.04 * S, 0.33 * S)), V(0.035, 0.28, 0.025), T.decor,
+        { bias: { [B.HEAD]: 50 } }, new THREE.Euler(0, 0, 0.32));
+    } else if (cfg.faceDecor === 'warpaint') {
+      f.box(H.clone().add(V(0, 0.02 * S, 0.34 * S)), V(0.38 * S, 0.065 * S, 0.025), T.decor,
+        { bias: { [B.HEAD]: 50 } });
+    } else if (cfg.faceDecor === 'runes') {
+      f.sphere(H.clone().add(V(0, 0.18 * S, 0.31 * S)), 0.052 * S, T.decor,
+        { sx: 1.2, sy: 1.2, sz: 0.35, bias: { [B.HEAD]: 50 } });
+    } else if (cfg.faceDecor === 'freckles') {
+      for (const fx of [-0.15, -0.08, 0.08, 0.15]) {
+        f.sphere(H.clone().add(V(fx * S, -0.04 * S, 0.32 * S)), 0.018 * S, T.decor,
+          { bias: { [B.HEAD]: 50 } });
+      }
+    } else if (cfg.faceDecor === 'skull') {
+      f.box(H.clone().add(V(0, -0.12 * S, 0.32 * S)), V(0.24 * S, 0.12 * S, 0.03), T.decor,
+        { bias: { [B.HEAD]: 50 } });
+    }
+
+    // ── 10 distinct hairstyles ───────────────────────────────────────────────
+    const hStyle = cfg.hair;
+    const hasBaseCap = hStyle !== 'none';
+    if (hasBaseCap) {
       f.sphere(H.clone().add(V(0, 0.05 * S, -0.02 * S)), 0.42 * S, T.hair,
         { sx: 0.94, sy: 0.96, sz: 1.0, bias: { [B.HEAD]: 12 } }, Math.PI * 2, Math.PI * 0.55);
       f.box(H.clone().add(V(0, 0.06 * S, 0.3 * S)), V(0.34, 0.06, 0.1), T.hair, { bias: { [B.HEAD]: 12 } });
     }
-    if (cfg.hair === 'long') {
-      f.box(H.clone().add(V(0, -0.32 * S, -0.3 * S)), V(0.44, 0.8, 0.14), T.hair, { bias: { [B.HEAD]: 5 } });
+
+    if (hStyle === 'short') {
+      // Cropped warrior cut
+      f.box(H.clone().add(V(0, 0.09 * S, 0.28 * S)), V(0.38 * S, 0.08 * S, 0.1 * S), T.hair, { bias: { [B.HEAD]: 15 } });
+      for (const side of [1, -1]) {
+        f.box(H.clone().add(V(side * 0.36 * S, 0.02 * S, 0.05 * S)), V(0.06 * S, 0.22 * S, 0.22 * S), T.hair, { bias: { [B.HEAD]: 15 } });
+      }
+    } else if (hStyle === 'topknot') {
+      // Topknot bun
+      f.sphere(H.clone().add(V(0, 0.48 * S, -0.02 * S)), 0.14 * S, T.hair, { bias: { [B.HEAD]: 30 } });
+      f.tube(V(0, H.y + 0.42 * S, -0.02 * S), 0.08 * S, 0.09 * S, 0.06 * S, T.leather, { bias: { [B.HEAD]: 30 } });
+    } else if (hStyle === 'long') {
+      // Long hair flowing down the back
+      f.box(H.clone().add(V(0, -0.32 * S, -0.3 * S)), V(0.44 * S, 0.8 * S, 0.14 * S), T.hair, { bias: { [B.HEAD]: 5 } });
+      for (const side of [1, -1]) {
+        f.capsule(H.clone().add(V(side * 0.28 * S, 0, 0.08 * S)), H.clone().add(V(side * 0.26 * S, -0.5 * S, 0.12 * S)),
+          0.06 * S, T.hair, { bias: { [B.HEAD]: 8, [B.NECK]: 10 } });
+      }
+    } else if (hStyle === 'braids') {
+      // Viking braids
+      for (const side of [1, -1]) {
+        f.capsule(H.clone().add(V(side * 0.26 * S, 0.02 * S, 0.1 * S)), H.clone().add(V(side * 0.2 * S, -0.65 * S, 0.18 * S)),
+          0.068 * S, T.hair, { bias: { [B.HEAD]: 10, [B.NECK]: 15 } });
+      }
+    } else if (hStyle === 'ponytail') {
+      // High ponytail arching back
+      f.sphere(H.clone().add(V(0, 0.38 * S, -0.2 * S)), 0.14 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+      f.capsule(H.clone().add(V(0, 0.36 * S, -0.22 * S)), H.clone().add(V(0.04 * S, -0.35 * S, -0.45 * S)),
+        0.095 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+    } else if (hStyle === 'flowing') {
+      // Flowing locks cascading over shoulders and back
+      f.box(H.clone().add(V(0, -0.42 * S, -0.32 * S)), V(0.56 * S, 1.05 * S, 0.18 * S), T.hair, { bias: { [B.HEAD]: 6, [B.NECK]: 10 } });
+      for (const side of [1, -1]) {
+        f.capsule(H.clone().add(V(side * 0.26 * S, 0, 0.08 * S)), H.clone().add(V(side * 0.28 * S, -0.68 * S, 0.18 * S)),
+          0.085 * S, T.hair, { bias: { [B.HEAD]: 8, [B.NECK]: 12 } });
+      }
+    } else if (hStyle === 'twin_braids') {
+      // Twin maiden braids hanging over front
+      for (const side of [1, -1]) {
+        f.capsule(H.clone().add(V(side * 0.28 * S, 0.02 * S, 0.04 * S)), H.clone().add(V(side * 0.24 * S, -0.72 * S, 0.22 * S)),
+          0.065 * S, T.hair, { bias: { [B.HEAD]: 8, [B.NECK]: 15 } });
+        f.sphere(H.clone().add(V(side * 0.24 * S, -0.74 * S, 0.22 * S)), 0.04 * S, T.leather, { bias: { [B.HEAD]: 8 } });
+      }
+    } else if (hStyle === 'chignon') {
+      // Low braided chignon bun at nape
+      f.sphere(H.clone().add(V(0, -0.08 * S, -0.38 * S)), 0.22 * S, T.hair, { sx: 1.2, sy: 1.0, sz: 0.85, bias: { [B.HEAD]: 25 } });
+      f.rib(H.clone().add(V(0, -0.08 * S, -0.38 * S)), 0.18 * S, 0.04 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+    } else if (hStyle === 'bob') {
+      // Pixie bob contouring the jawline
+      f.capsule(H.clone().add(V(0.36 * S, 0.08 * S, 0)), H.clone().add(V(0.32 * S, -0.32 * S, 0.12 * S)), 0.12 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+      f.capsule(H.clone().add(V(-0.36 * S, 0.08 * S, 0)), H.clone().add(V(-0.32 * S, -0.32 * S, 0.12 * S)), 0.12 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+      f.box(H.clone().add(V(0, -0.15 * S, -0.34 * S)), V(0.48 * S, 0.45 * S, 0.14 * S), T.hair, { bias: { [B.HEAD]: 25 } });
     }
-    if (cfg.hair === 'topknot') {
-      f.sphere(H.clone().add(V(0, 0.46 * S, -0.02)), 0.13, T.hair, { bias: { [B.HEAD]: 30 } });
-    }
+
     // hood up: deep cowl; down: mantle yoke at the shoulders
     if (cfg.hoodUp) {
       const cowl = H.clone().add(V(0, 0.08 * S, -0.05));
