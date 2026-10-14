@@ -49,12 +49,12 @@ function noise(x, z, scale, seed) {
   return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
 }
 
+// The home region reads as a normal town: open meadow around the settlement,
+// real mountain peaks in the north, and the authored graveyard/ruins sites.
+// The old all-biome showcase patches (snow, blight, deep woods) are gone —
+// those biomes now live out in the world where they belong.
 const REGIONS = [
-  { biome: 'forest', x: 20, z: 23, rx: 23, rz: 21, seed: 11 },
   { biome: 'meadow', x: 27, z: 61, rx: 24, rz: 22, seed: 17 },
-  { biome: 'snow_forest', x: 81, z: 17, rx: 24, rz: 19, seed: 23 },
-  { biome: 'snowfield', x: 99, z: 48, rx: 19, rz: 22, seed: 29 },
-  { biome: 'deadlands', x: 94, z: 78, rx: 22, rz: 19, seed: 31 },
   { biome: 'mountains', x: 59, z: 18, rx: 22, rz: 21, seed: 37 },
   { biome: 'mountains', x: 91, z: 34, rx: 17, rz: 17, seed: 41 },
   { biome: 'town', x: 56, z: 55, rx: 13, rz: 12, seed: 43 },
@@ -251,12 +251,20 @@ function makeWorld(seed) {
     }
   }
 
+  // per-sample half-width — the old stream stamp is the minimum; courses swell
+  // via the same world-space noise world.mjs uses so seam widths match
+  for (const s of riverSamples) {
+    s.w = 1.9 + 1.5 * noise(s.x, s.z, 140, seed + 9193);
+  }
+
   // Populate river water cells
   for (let i = 0; i < riverSamples.length; i += 2) {
     const sample = riverSamples[i];
     const centerX = Math.round(sample.x), centerZ = Math.round(sample.z);
-    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
-      if (dx * dx + dz * dz > 3.4) continue;
+    const halfW = (sample.w || 1.9) + 0.1;
+    const maxR2 = halfW * halfW;
+    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      if (dx * dx + dz * dz > maxR2) continue;
       const x = centerX + dx, z = centerZ + dz;
       if (x < 1 || z < 1 || x >= WIDTH - 1 || z >= HEIGHT - 1) continue;
       const cell = z * WIDTH + x;
@@ -282,16 +290,16 @@ function makeWorld(seed) {
       heights[at] += (Math.min(heights[at], target) - heights[at]) * shoreBlend;
     }
 
-    let nearest = Infinity, riverLevel = null;
+    let nearest = Infinity, riverLevel = null, riverW = 1.9;
     for (const sample of riverSamples) {
       const distance = Math.hypot(x - sample.x, z - sample.z);
-      if (distance < nearest) { nearest = distance; riverLevel = sample.level; }
+      if (distance < nearest) { nearest = distance; riverLevel = sample.level; riverW = sample.w || 1.9; }
       if (nearest < 0.2) break;
     }
     if (nearest < 7.0 && riverLevel !== null) {
-      const riverBed = riverLevel - 1.4 + Math.min(1, nearest / 1.5) * 0.4;
-      const riverBank = riverLevel + 0.35 + (nearest - 1.5) * 1.0;
-      const target = nearest <= 1.5 ? riverBed : riverBank;
+      const riverBed = riverLevel - (1.0 + 0.2 * riverW) + Math.min(1, nearest / riverW) * 0.4;
+      const riverBank = riverLevel + 0.35 + (nearest - riverW) * 1.0;
+      const target = nearest <= riverW ? riverBed : riverBank;
       const blend = smooth(Math.max(0, Math.min(1, (7.0 - nearest) / 5.5)));
       heights[at] += (Math.min(heights[at], target) - heights[at]) * blend;
     }
@@ -314,8 +322,18 @@ function makeWorld(seed) {
     // Road direction across river (west road from town 56,55 to 12,54)
     const rdx = 12 - 56, rdz = 54 - 55;
     const rotY = Math.atan2(rdx, rdz);
-    const bridgeWidth = 2.4;  // 12 ft roadway
-    const bridgeLength = 5.2; // 26 ft span
+    // size the span to the actual crossing cluster so a wide river section
+    // still gets a deck that reaches both banks
+    let xMin = Infinity, xMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+    for (const c of rawCrossings) {
+      const lx2 = c.x - avgX, lz2 = c.z - avgZ;
+      const rlx = lx2 * Math.cos(-rotY) - lz2 * Math.sin(-rotY);
+      const rlz = lx2 * Math.sin(-rotY) + lz2 * Math.cos(-rotY);
+      xMin = Math.min(xMin, rlx); xMax = Math.max(xMax, rlx);
+      zMin = Math.min(zMin, rlz); zMax = Math.max(zMax, rlz);
+    }
+    const bridgeWidth = Math.max(2.4, xMax - xMin + 1.8);   // roadway ≥ 12 ft
+    const bridgeLength = Math.max(5.2, zMax - zMin + 2.8);  // span reaches both banks
     const bridgeSpanCells = Math.ceil(bridgeLength / 2) + 1;
 
     // Clear water and mark solid roadway under the entire bridge footprint
@@ -476,14 +494,33 @@ function makeWorld(seed) {
     }
   };
 
-  makeCluster('western-oak-groves', 'forest', 20, 23, 18, 'grove-with-undergrowth', 78, ['tree', 'tree', 'boulder', 'fern', 'twig', 'rock']);
+  makeCluster('western-oak-groves', 'forest', 20, 23, 14, 'grove-with-undergrowth', 38, ['tree', 'tree', 'fern', 'twig', 'rock']);
   makeCluster('western-meadow-patches', 'meadow', 27, 66, 17, 'grass-and-wildflowers', 72, ['wildflower', 'grass', 'grass', 'wildflower', 'grass', 'rock', 'wildflower', 'grass', 'tree']);
   makeCluster('river-willow-stand', 'meadow', 34, 52, 14, 'willow-stand', 36, ['wildflower', 'grass', 'grass', 'rock', 'wildflower', 'grass', 'tree']);
-  makeCluster('northern-snow-pines', 'snow_forest', 81, 17, 18, 'snow-pine-stand', 70, ['tree', 'tree', 'boulder', 'snow_drift', 'rock']);
-  makeCluster('eastern-snowfield', 'snowfield', 100, 49, 15, 'drifts-and-frost-rocks', 56, ['snow_drift', 'snow_drift', 'rock', 'boulder']);
-  makeCluster('southern-deadlands', 'deadlands', 94, 78, 17, 'charred-sparse-grove', 62, ['tree', 'tree', 'dead_brush', 'rock', 'boulder']);
+  makeCluster('southern-meadow-pastures', 'meadow', 82, 74, 15, 'grass-and-wildflowers', 44, ['wildflower', 'grass', 'grass', 'wildflower', 'grass', 'rock', 'tree']);
   makeCluster('mountain-boulder-fields', 'mountains', 61, 18, 16, 'rockfall-pockets', 62, ['boulder', 'boulder', 'rock', 'tree', 'scree']);
   makeCluster('eastern-high-pines', 'mountains', 91, 34, 13, 'scree-and-pine', 46, ['boulder', 'rock', 'tree', 'scree']);
+
+  // rare glacial erratics: round boulders dot the home meadows at minimal
+  // density (same rule/salts as neighbor regions so the field is world-anchored)
+  let erraticCount = 0;
+  for (let z = 2; z < HEIGHT - 2 && erraticCount < 4; z += 3) {
+    for (let x = 2; x < WIDTH - 2 && erraticCount < 4; x += 3) {
+      const cell = z * WIDTH + x;
+      if (biomeCells[cell] !== biomeIndex.meadow || waterCells.has(cell) || roadCells.has(cell)) continue;
+      if (Math.hypot(x - townCenter.x, z - townCenter.z) < 18) continue;
+      if (hash2(x, z, 9613) <= 0.9925) continue;
+      const px = x + 0.5 + (hash2(x, z, 9617) - 0.5) * 1.6;
+      const pz = z + 0.5 + (hash2(z, x, 9619) - 0.5) * 1.6;
+      const pc = Math.floor(pz) * WIDTH + Math.floor(px);
+      if (waterCells.has(pc) || roadCells.has(pc)) continue;
+      addProp('boulder', px, pz, {
+        scale: 1.1 + hash2(x, z, 9623) * 0.9, shape: 'round',
+        rotY: hash2(x, z, 9629) * Math.PI * 2, clusterId: 'meadow-erratic',
+      });
+      erraticCount++;
+    }
+  }
 
   for (let i = 0; i < 24; i++) {
     const angle = rng() * Math.PI * 2, radius = 3 + rng() * 7;
@@ -508,7 +545,7 @@ function makeWorld(seed) {
     const s = riverSamples[i];
     for (const side of [-1, 1]) {
       if (hash2(i, side, 311) < 0.38) {
-        const dist = 1.9 + hash2(i, side, 419) * 1.2;
+        const dist = (s.w || 1.9) + 0.4 + hash2(i, side, 419) * 1.2;
         const rx = s.x + Math.cos(side * 1.57) * dist;
         const rz = s.z + Math.sin(side * 1.57) * dist;
         const cell = Math.floor(rz) * WIDTH + Math.floor(rx);
@@ -676,10 +713,11 @@ export function generateOverworld({ seed = 73021 } = {}) {
   return makeWorld(seed >>> 0);
 }
 
+// Water is walkable by design (shallow fords): only walls block cell movement.
 export function isOverworldCellWalkable(map, x, z) {
   const { w, h } = map?.size || {};
   if (!Number.isInteger(x) || !Number.isInteger(z) || x < 0 || z < 0 || x >= w || z >= h) return false;
-  const blocked = new Set([...(map.cells?.wall || []), ...(map.cells?.water || [])]
+  const blocked = new Set((map.cells?.wall || [])
     .map(([cellX, cellZ]) => cellZ * w + cellX));
   return !blocked.has(z * w + x);
 }
@@ -695,19 +733,18 @@ export function isOverworldPointWalkable(map, worldX, worldZ) {
 
   // Full solid cells
   const wallCells = new Set((map.cells?.wall || []).filter((c) => !c[2]).map(([x, z]) => z * w + x));
-  const waterCells = new Set((map.cells?.water || []).filter((c) => !c[2]).map(([x, z]) => z * w + x));
-  if (wallCells.has(cz * w + cx) || waterCells.has(cz * w + cx)) return false;
+  if (wallCells.has(cz * w + cx)) return false;
 
   const u = (worldX - cx * CELL_FT) / CELL_FT;
   const v = (worldZ - cz * CELL_FT) / CELL_FT;
 
-  for (const cell of [...(map.cells?.wall || []), ...(map.cells?.water || [])]) {
+  for (const cell of (map.cells?.wall || [])) {
     if (cell[0] === cx && cell[1] === cz && cell[2]) {
       if (isPointInHalfTile(u, v, cell[2])) return false;
     }
   }
   for (const h of map.cells?.halfTiles || []) {
-    if (h.x === cx && h.z === cz && (h.type === 'water' || h.type === 'wall')) {
+    if (h.x === cx && h.z === cz && h.type === 'wall') {
       if (isPointInHalfTile(u, v, h.orientation)) return false;
     }
   }
@@ -731,9 +768,7 @@ export function validateOverworld(map) {
   if (!roads.size) errors.push('world has no roads');
   if (water.size !== waterList.length) errors.push('water cells must be unique');
   if (roads.size !== roadList.length) errors.push('road cells must be unique');
-  if (waterList.some(([x, z]) => isOverworldCellWalkable(map, x, z))) {
-    errors.push('water cells must be blocked for movement');
-  }
+  // water is walkable by design (shallow fords) — no blocked-water assertion
   if (Array.isArray(cells?.halfTiles)) {
     const validOrientations = new Set(['nw', 'ne', 'se', 'sw', 'tl', 'tr', 'br', 'bl']);
     const validTypes = new Set(['water', 'road', 'wall', 'floor']);
@@ -787,7 +822,7 @@ export function validateOverworld(map) {
     errors.push('ponds must sit in lowland basins');
   }
   if (biomes?.cells?.length !== width * height) errors.push('biome field has the wrong size');
-  if (new Set(biomes?.cells || []).size < 8) errors.push('world is missing biome variety');
+  if (new Set(biomes?.cells || []).size < 4) errors.push('world is missing biome variety');
   if (!spawns?.party?.[0] ||
       !isOverworldCellWalkable(map, Math.floor(spawns.party[0][0]), Math.floor(spawns.party[0][1]))) {
     errors.push('town party spawn must be on walkable land');

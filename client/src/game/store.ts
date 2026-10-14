@@ -38,6 +38,8 @@ export interface GameStore {
   myTokenId: string | null;
   chat: ChatMsg[];
   mapName: string;
+  /** P3.3 streamed overworld info; null while in a dungeon/menu. */
+  world: { seed: number; regionW: number; regionH: number; focus: { rx: number; rz: number }; mapId: string } | null;
   dayTime: number;          // minutes 0..1440
   weather: string;
   interactLabel: string | null;
@@ -47,7 +49,7 @@ export interface GameStore {
   // actions
   setPhase: (p: Phase) => void;
   setJoined: (me: PlayerInfo, players: PlayerInfo[], tokens: TokenState[], mapName: string) => void;
-  applyPatch: (p: Partial<{ players: PlayerInfo[]; tokens: TokenState[]; doors: DoorState[]; chat: ChatMsg[]; mapName: string; dayTime: number; weather: string; initiative: any }>) => void;
+  applyPatch: (p: Partial<{ players: PlayerInfo[]; tokens: TokenState[]; doors: DoorState[]; chat: ChatMsg[]; mapName: string; world: GameStore['world']; dayTime: number; weather: string; initiative: any }>) => void;
   setInteract: (label: string | null) => void;
   setConnection: (c: GameStore['connection']) => void;
 }
@@ -81,6 +83,7 @@ export const useGame = createStore({
   myTokenId: null,
   chat: [],
   mapName: '',
+  world: null,
   dayTime: 21 * 60,
   weather: 'clear',
   interactLabel: null,

@@ -5,7 +5,8 @@
 //
 // New algorithm:
 //   1. desired camera = head(focus y≈5) + yaw/pitch/dist orbit, height-capped
-//      below wall tops (indoor) so the view never rises over the walls.
+//      below wall tops (indoor only) so the view never rises over indoor walls,
+//      while allowing unconstrained height outdoors / on elevated terrain.
 //   2. TRUE 3D segment-vs-AABB sweep head→desired over colliders (slab test).
 //      Boxes whose y-range the sightline passes above/below are ignored
 //      (low props yMax≤4 vs sightline starting at head height; high props
@@ -104,14 +105,19 @@ export class CameraRig {
     let fx = 0, fz = 0, fy = 0;
     let framing = false;
     if (this.frameIds) {
-      let n = 0, cx = 0, cz = 0;
+      let n = 0, cx = 0, cySum = 0, cz = 0;
       for (const id of this.frameIds) {
         const a = eng.actors.get(id);
         if (!a) continue;
-        cx += a.group.position.x; cz += a.group.position.z; n++;
+        cx += a.group.position.x;
+        cySum += a.group.position.y;
+        cz += a.group.position.z;
+        n++;
       }
       if (n > 0) {
-        cx /= n; cz /= n;
+        cx /= n;
+        const avgY = cySum / n;
+        cz /= n;
         let spread = 0;
         for (const id of this.frameIds) {
           const a = eng.actors.get(id);
@@ -123,10 +129,12 @@ export class CameraRig {
         this.yaw += dt * 0.11;
         const fit = Math.max(18, Math.min(55, spread * 2.1 + 18));
         this.dist += (fit - this.dist) * (1 - Math.exp(-dt * 1.6));
-        _tmp.set(cx, 0, cz);
+        _tmp.set(cx, avgY, cz);
         const k = this.focusInit ? 1 - Math.exp(-dt * 3) : 1;
         this.frameFocus.lerp(_tmp, k);
-        fx = this.frameFocus.x; fz = this.frameFocus.z; fy = 0;
+        fx = this.frameFocus.x;
+        fy = this.frameFocus.y;
+        fz = this.frameFocus.z;
         this.frameT += dt;
       } else {
         this.frameIds = null;
@@ -135,20 +143,28 @@ export class CameraRig {
     if (!framing) {
       const focus = eng.actors.focusId ? eng.actors.get(eng.actors.focusId) : null;
       if (!focus) return;
-      _tmp.set(focus.group.position.x, 0, focus.group.position.z);
+      _tmp.set(focus.group.position.x, focus.group.position.y, focus.group.position.z);
       const k = this.focusInit ? 1 - Math.exp(-dt * 14) : 1;
       this.frameFocus.lerp(_tmp, k);
-      fx = this.frameFocus.x; fz = this.frameFocus.z;
-      fy = focus.group.position.y;
+      fx = this.frameFocus.x;
+      fy = this.frameFocus.y;
+      fz = this.frameFocus.z;
     }
     this.focusInit = true;
 
-    // ── desired camera: orbit offset, height capped vs wall tops ────────────
+    // ── desired camera: orbit offset, height capped vs wall tops (indoor) ──
     const headY = fy + 5;                       // sightline origin: head height
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     const horiz = this.dist * cp;
     let cy = headY + this.dist * sp;
-    const maxY = eng.grid.cameraMaxY;           // indoor: below wall tops
+
+    // Ceiling cap: only apply if finite and indoor. If the character ascends a mountain
+    // or elevated terrain, ensure maxY never forces the camera below head height.
+    const gridMaxY = eng.grid.cameraMaxY;
+    const isOutdoor = (eng.grid as any).isIndoor === false;
+    const hasCeiling = !isOutdoor && gridMaxY != null && Number.isFinite(gridMaxY);
+    const maxY = hasCeiling ? Math.max(gridMaxY, headY + 2) : Infinity;
+
     if (cy > maxY) cy = maxY;
     if (cy < 2.4) cy = 2.4;
     _desired.set(fx + Math.sin(this.yaw) * horiz, cy, fz + Math.cos(this.yaw) * horiz);

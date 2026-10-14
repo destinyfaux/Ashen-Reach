@@ -104,6 +104,14 @@ export function attachWs(server, gm) {
           // The mover already predicts its own position locally; echoing the
           // full token snapshot back at 10 Hz only repeats actor/HUD work.
           // Combat movement still needs its authoritative remaining budget.
+          // A region-border crossing folds the focus change into this same
+          // patch; region defs flow to clients via /api/map/:id.
+          const worldPatch = gm.consumeWorldPatch?.() || null;
+          if (worldPatch) {
+            // the mover is excluded from the broadcast below — deliver its own
+            // focus change privately so its client streams the new ring
+            sendToUser(userId, 'state:patch', { version: gm.state.version, ...worldPatch });
+          }
           if (gm.state.initiative) {
             sendToUser(userId, 'state:patch', {
               version: gm.state.version,
@@ -113,7 +121,8 @@ export function attachWs(server, gm) {
           broadcast('state:patch', {
             version: gm.state.version,
             tokens: gm.state.tokens,
-            initiative: gm.state.initiative
+            initiative: gm.state.initiative,
+            ...(worldPatch || {}),
           }, null, ws);
         } else if (r.reason !== 'too_fast' && r.position) {
           send(ws, 'move:rejected', { reason: r.reason, position: r.position });

@@ -18,26 +18,34 @@ TileGrid.isBlocked(x: number, z: number): boolean        // world coords, cell c
 TileGrid.cellOf(x: number, z: number): {cx: number, cz: number}
 TileGrid.worldOf(cx: number, cz: number): {x: number, z: number} // center of cell
 
-// engine/FogOfWar.ts
-FogOfWar.resize(w: number, h: number)                     // cells
-FogOfWar.update(origin: {x,z}, radiusFt: number, walls: WallSeg[], lights: LightDef[])
-FogOfWar.isExplored(cx, cz): boolean
-FogOfWar.isVisible(cx, cz): boolean
-FogOfWar.getTexture(): THREE.CanvasTexture               // projected over ground
+// P3.3 streamed world (region defs carry `region` + `worldOriginFt`):
+TileGrid.addRegion(map: MapDef): RegionHandle | null     // additive build at world offset
+TileGrid.removeRegion(id: string): void
+TileGrid.retainRegions(keep: Set<string>): void          // prune beyond the stream ring
+TileGrid.setFocusRegion(id: string): MapDef | null
+TileGrid.regionAt(x: number, z: number): RegionHandle | null
+TileGrid.nearestExitWorld(x: number, z: number, radiusFt?): { id, distance, label } | null
+// isOpenWorld / isBlocked / terrainHeightAt / resolve are region-aware when
+// grid.worldMode is true (they resolve the region containing the query point).
 
-// engine/Actors.ts
-Actors.sync(tokens: TokenState[])                         // create/update/remove by id
-Actors.playAction(actorId: string, action: ActionFx)     // lunge/cast/hit/die/telegraph
-Actors.getScreenPos(actorId): {x,y}                       // for floating text
+// engine/FogOfWar.ts — dungeon-only since P3.7b; the streamed overworld is
+// always revealed (no region fog planes) and world-mode visibility is always true
+FogOfWar.build(map: MapDef)                // dungeon/single-map layer
+FogOfWar.buildRegion(map: MapDef)          // API compat; no longer called for streamed regions
+FogOfWar.removeRegion(id) / retainRegions(keep) / clearRegions()
+FogOfWar.isExplored(cx, cz): boolean       // true in world mode; dungeon layer otherwise
+FogOfWar.isVisible(cx, cz): boolean        // true in world mode; dungeon layer otherwise
+FogOfWar.exploredFor(id): Uint8Array | null // null in world mode (HUD minimap shows all)
 
-// engine/Effects.ts
-Effects.burst(pos, color, count)
-Effects.floatText(pos, text, kind: 'dmg'|'heal'|'miss'|'crit'|'info')
-Effects.teleground(pos, radiusFt, color)                  // ground telegraph decal
-
-// engine/CameraRig.ts
-CameraRig.follow(actorId | null)                          // null = free orbit
-CameraRig.frameCombat(actorIds: string[])                 // tactical framing
+// P3.7 world minimap probe (engine writes, HUD reads)
+engine/worldProbe.ts
+worldProbe: { active: boolean, player: {x, z, rotY}, regions: WorldProbeRegion[] }
+WorldProbeRegion: { id, rx, rz, name, w, h, originX, originZ,
+                    biome: ArrayLike<number> | null, kinds: string[],
+                    water: Uint8Array | null, road: Uint8Array | null,
+                    explored: Uint8Array | null }
+// Rebuilt on every region add/prune (Engine.syncWorldProbe); player position
+// is refreshed every tick. Dungeon loads set active = false and clear regions.
 ```
 
 ## WebSocket protocol (`ws` JSON envelopes)
@@ -70,6 +78,35 @@ Server → Client:
 'move:rejected'  {reason, position}                         // sent to the rejected mover
 'net:pong'       {sentAt}                                   // response to `net:ping`
 ```
+`state` (join snapshots) and `state:patch` payloads carry `world` while the party is in
+the streamed overworld: `{ seed, regionW, regionH, focus: {rx, rz}, mapId }`. `world` is
+`null` inside dungeons. Region boundary crossings are seamless: an accepted move whose
+cell lands in a neighboring region produces the same movement patch plus
+`world/mapId/mapName` (no inline map def — clients fetch region defs from
+`/api/map/:id`); the crossing mover additionally receives the focus patch privately
+because the movement broadcast excludes the predicting socket.
+
+## Streamed world (P3.3)
+
+- The overworld is an infinite grid of 112×96-cell regions keyed by integer region
+  coordinates `(rx, rz)`. Region ids are `ashen_reach` (home, `(0,0)`) or
+  `w<rx>_<rz>` with `m` marking negative parts (e.g. `wm1_2`); ids match
+  `/api/map/:id` (`[a-z0-9_]+`). Region names are deterministic per region.
+- Region defs are the normal MapDef shape plus `region: {rx, rz}` and
+  `worldOriginFt: {x, z}`; token positions are always world feet. `/api/map/:id`
+  serves any loaded region def (overworld regions carry no secret state).
+- The server keeps the focus region plus a 1-ring registered; farther regions are
+  pruned and regenerate deterministically on demand. Client-side, the engine builds
+  each fetched region additively at its world offset and prunes beyond the ring;
+  region defs are cached and fetched via REST (`ensureWorldRegions` in
+  `client/src/net/client.ts`).
+- Movement validation is region-based: the point's region must be loaded and its
+  cell not water/wall. Dungeon maps keep their rectangle bounds. Crossing a border
+  shifts the party's focus region without repositioning any token (world coordinates
+  are unchanged). Focus shifts are deferred during combat.
+- Dungeon round-trips are unchanged (`useExit` → `ashen_cellar`, `returnToPrevious`
+  → the overworld region the party left, restoring saved world positions).
+
 Door state is included in join snapshots and state patches as
 `doors: [{wallIndex, open, locked, secret, revealed, x1, z1, x2, z2}]`.
 Unrevealed secret doors are omitted from player door arrays; their public map segment
@@ -84,14 +121,15 @@ DM-managed; player keys, lockpicking, and search checks are not yet supported.
 Map definitions may include `exits: MapExit[]`. Exit positions use cell coordinates,
 while player token positions use world feet (5 ft per cell). An `intent:exit` is
 accepted only for an exit on the active map when the player's living token is within
-10 ft and no encounter is active. The client advertises exits within 8.5 ft, while
-the server's slightly larger acceptance radius tolerates movement-prediction and
-network delay. A fixed `destinationMapId` leads to that registered map; its `returnToPrevious` exit
-returns to the most recently entered fixed-destination map. In the live app the party
-starts in `ashen_reach` and its cemetery entrance leads to `ashen_cellar`.
-The server sends a personalized `state:patch` containing the new `mapId`, `mapName`,
-map definition, tokens, doors, and chat. The client rebuilds map geometry before
-synchronizing tokens.
+10 ft and no encounter is active. The client advertises exits within 8.5 ft (across
+all loaded regions in world mode), while the server's slightly larger acceptance
+radius tolerates movement-prediction and network delay. A fixed `destinationMapId`
+leads to that registered map; its `returnToPrevious` exit returns to the most recently
+entered fixed-destination map. In the live app the party starts in `ashen_reach` and
+its cemetery entrance leads to `ashen_cellar`. The server sends a personalized
+`state:patch` containing the new `mapId`, `mapName`, map definition, tokens, doors,
+and chat. The client rebuilds map geometry before synchronizing tokens (for region
+defs it streams additively instead of rebuilding).
 
 Visited map creature and door state plus per-player positions are retained in the
 `GameManager` session runtime. Character tokens (including inventory/rewards) remain
@@ -103,9 +141,10 @@ heightfield with dimensions `(size.w + 1) × (size.h + 1)`, and `biomes.cells` a
 row-major biome index for each map cell. `cells.water` is movement-blocking on both
 client and server; `cells.road` marks walkable terrain. Prop and exit coordinates are
 in cells, while player tokens are in world feet. The current fixed seed is `73021`;
-the home region has no monster spawns. Town buildings are visual props, not shops/NPC
+regions carry no monster spawns. Overworld prop vocabulary also includes the ruin/graveyard kit (`ruin_column`, `ruin_column_fallen`, `ruin_wall`, `ruin_slab`, `grave_gate`, `grave_fence`, `grave_mound`, `mausoleum`, `columbarium`) rendered by dedicated client builders. Town buildings are visual props, not shops/NPC
 interactions. World generation rules and invariants are in
-`server/src/maps/worldGenerator.mjs`.
+`server/src/maps/worldGenerator.mjs` (home region) and `server/src/maps/world.mjs`
+(region grid, world-space rivers/roads, seam stitching).
 
 Accepted movement is broadcast with personalized token snapshots to other connections,
 not echoed to the predicting mover. During combat, the mover receives a private
@@ -139,7 +178,9 @@ rejoining a finalized character during that server session; server state is in-m
 ```js
 state = {
   version, sessionId, inviteCode, dmId,
-  mapId, dayNight: {mode, time01}, weather: {type, wind, intensity},
+  mapId,                                  // focus region id or dungeon map id
+  world: { seed, regionW, regionH, focus: {rx, rz}, mapId } | null,
+  dayNight: {mode, time01}, weather: {type, wind, intensity},
   players: [{id, name, color, tokenId, online}],
   tokens: [{                         // every creature incl. players
     id, kind: 'player'|'monster'|'npc',
@@ -183,7 +224,8 @@ DirectorAI:     think(state, events) -> [dm:cmd]              // AI-DM
   paths or save behavior from earlier plans without first implementing and testing it.
 
 ## QA tooling
-- Automated commands: `npm run typecheck`, `npm test`, `npm run build`, `npm run smoke`.
+- Automated commands: `npm run typecheck`, `npm test` (includes rules, GameManager and
+  all map test suites), `npm run build`, `npm run smoke`.
 - `tools/shoot.py` exists but its URL/selectors are known to be out of sync with the
   shipped Node server and current UI; see `TASKS.md` before relying on it.
 - Screenshots and VLM review are optional. Store actual evidence and any real review

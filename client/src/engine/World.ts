@@ -13,7 +13,7 @@ import { getAreaTileSet, getMaterial } from './materials';
 import { playSfx } from '../audio/music';
 import {
   softSprite, flameSprite, glowSprite, sparkSprite, streakSprite,
-  discSprite, shaftGradient, noiseTexture, moonTexture, sunSprite
+  shaftGradient, noiseTexture, moonTexture, sunSprite
 } from './sprites';
 
 export interface SkyState {
@@ -206,7 +206,6 @@ export function interpolateSky(hour: number): SkyState {
   return { ...last };
 }
 
-
 interface Torch {
   light: THREE.PointLight;
   base: number;
@@ -236,9 +235,7 @@ export class World {
   private motes: THREE.Points | null = null;
   private groundFog: THREE.Mesh | null = null;
   private groundFogLayers: THREE.Mesh[] = [];
-  private heightFogVolume: THREE.Mesh | null = null;
   private sunShafts: THREE.Mesh | null = null;
-  private heightFogMat: THREE.ShaderMaterial | null = null;
   private sunShaftsMat: THREE.ShaderMaterial | null = null;
   private cloudShadows: THREE.Mesh | null = null;
   private cloudShadowMat: THREE.ShaderMaterial | null = null;
@@ -277,8 +274,8 @@ export class World {
     this.sun.shadow.mapSize.set(eng.lowgfx ? 1024 : 2048, eng.lowgfx ? 1024 : 2048);
     const sc = this.sun.shadow.camera as THREE.OrthographicCamera;
     sc.left = -90; sc.right = 90; sc.top = 90; sc.bottom = -90; sc.far = 420;
-    this.sun.shadow.bias = -0.0004;   // tuned (T2-d): was -0.0007 (acne)
-    this.sun.shadow.normalBias = 1.5; // geo-scale bias for PCFSoft at ft scale
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 1.5;
     eng.scene.add(this.sun); eng.scene.add(this.sun.target);
     // rim: cool blue-green from high behind — separates figures from the dark
     this.rim = new THREE.DirectionalLight(0x5a8a86, 0.32);
@@ -372,10 +369,16 @@ export class World {
 
         varying vec3 vDirection;
 
-        float hash21(vec2 p) {
-          p = fract(p * vec2(123.34, 456.21));
-          p += dot(p, p + 45.32);
-          return fract(p.x * p.y);
+        float hash12(vec2 p) {
+          vec3 p3  = fract(vec3(p.xyx) * 0.1031);
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
+        }
+
+        float hash13(vec3 p) {
+          vec3 p3 = fract(p * 0.1031);
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
         }
 
         float vnoise(vec2 p) {
@@ -383,8 +386,8 @@ export class World {
           vec2 f = fract(p);
           vec2 u = f * f * (3.0 - 2.0 * f);
           return mix(
-            mix(hash21(i + vec2(0.0, 0.0)), hash21(i + vec2(1.0, 0.0)), u.x),
-            mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x),
+            mix(hash12(i + vec2(0.0, 0.0)), hash12(i + vec2(1.0, 0.0)), u.x),
+            mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x),
             u.y
           );
         }
@@ -396,6 +399,111 @@ export class World {
           v += 0.1250 * vnoise(p); p = p * 2.01 + vec2(3.5, 0.8);
           v += 0.0625 * vnoise(p);
           return v;
+        }
+
+        float fbmHigh(vec2 p) {
+          float v = 0.0;
+          v += 0.533 * vnoise(p); p = p * 2.2 + vec2(1.2, 3.4);
+          v += 0.267 * vnoise(p); p = p * 2.3 - vec2(3.1, 1.1);
+          v += 0.133 * vnoise(p); p = p * 2.1 + vec2(2.5, 0.4);
+          v += 0.067 * vnoise(p);
+          return v;
+        }
+
+        // ── Tidewater Non-Uniform Stars & Milky Way ──
+        vec3 renderStars(vec3 dir, float nightFac) {
+          if (nightFac <= 0.01 || dir.y <= 0.01) return vec3(0.0);
+
+          vec3 a = abs(dir);
+          bool onX = a.x > a.y && a.x > a.z;
+          bool onY = a.y > a.z;
+          float face = onX ? (sign(dir.x) + 2.0) : (onY ? (sign(dir.y) + 5.0) : (sign(dir.z) + 8.0));
+          vec2 uv = (onX ? (dir.yz / a.x) : (onY ? (dir.xz / a.y) : (dir.xy / a.z))) * 185.0;
+
+          vec3 cell = vec3(floor(uv), face);
+          float h = hash13(cell);
+
+          float bx = dot(dir, normalize(vec3(0.38, 0.24, 0.89))) * 3.8;
+          float band = exp(-bx * bx);
+          float dustLane = fbm(dir.xz * 3.8 + vec2(dir.y * 2.5));
+          float dustMask = smoothstep(0.35, 0.75, dustLane);
+          float milkyWay = band * (0.85 + 0.35 * dustMask) * 0.018;
+          vec3 milkyCol = mix(vec3(0.42, 0.50, 0.72), vec3(0.65, 0.72, 0.88), dustMask) * milkyWay;
+
+          bool hasStar = h < (band * 0.038 + 0.024);
+          vec3 starColor = vec3(0.0);
+
+          if (hasStar) {
+            float uc = max(hash13(cell + 7.7), 0.00025);
+            float flux = pow(uc, -0.82) * 0.0068;
+
+            float twinkleRate = hash13(cell + 13.3) * 8.5 + 4.5;
+            float twinkle = sin(uTime * twinkleRate + h * 62.8) * mix(0.28, 0.08, clamp(dir.y * 2.0, 0.0, 1.0)) + 1.0;
+
+            vec2 sp = floor(uv) + vec2(hash13(cell + 3.1), hash13(cell + 5.7)) * 0.6 + 0.2;
+            float d = length(uv - sp);
+
+            float size = log2(max(1.0, flux * 120.0)) * 0.06 + 0.95;
+            float psf = exp(-(d * d) / (size * size * 0.16));
+
+            float spectral = hash13(cell + 17.0);
+            vec3 specCol = mix(vec3(0.72, 0.84, 1.0), vec3(1.0, 0.88, 0.65), smoothstep(0.25, 0.85, spectral));
+            if (spectral > 0.93) specCol = vec3(1.0, 0.60, 0.42);
+
+            starColor = specCol * (psf * flux * twinkle);
+          }
+
+          float horizonFade = smoothstep(0.01, 0.18, dir.y);
+          return (starColor + milkyCol) * nightFac * horizonFade;
+        }
+
+        // ── Luminous Procedural Moon with Maria Topography ──
+        vec3 renderMoon(vec3 dir, vec3 moonDir, vec3 moonCol) {
+          float cosA = dot(dir, moonDir);
+          float ang = acos(clamp(cosA, -1.0, 1.0));
+          float r = ang / 0.0175;
+
+          float disk = smoothstep(1.0, 0.93, r);
+          float aureole = exp(-ang * 12.0) * 0.45 + exp(-ang * 3.0) * 0.15;
+          vec3 glow = moonCol * aureole * uNightFactor * smoothstep(-0.02, 0.05, moonDir.y);
+
+          if (disk <= 0.001) return glow;
+
+          vec3 localRight = normalize(cross(vec3(0.0, 1.0, 0.0), moonDir));
+          vec3 localUp = cross(moonDir, localRight);
+          vec2 moonUv = vec2(dot(dir - moonDir, localRight), dot(dir - moonDir, localUp)) / 0.0175;
+          float z = sqrt(max(0.0, 1.0 - dot(moonUv, moonUv)));
+
+          float craters = fbmHigh(moonUv * 5.0 + vec2(1.7, 3.2));
+          float maria = smoothstep(0.40, 0.68, fbm(moonUv * 2.4 - vec2(2.4, 1.8)));
+          float lunarAlbedo = mix(0.92, 0.48, maria) + (craters - 0.5) * 0.18;
+
+          float sunAlt = uSunDirection.y;
+          float phaseTerminator = smoothstep(-0.4, 0.35, -sunAlt * 1.5 + moonUv.x * 0.45);
+          float sunLit = mix(0.85, 1.0, phaseTerminator);
+          float earthshine = 0.22;
+
+          float limb = 1.0 - 0.25 * (1.0 - z);
+          vec3 diskSurface = moonCol * disk * (sunLit * 2.8 + earthshine) * lunarAlbedo * limb;
+
+          return (diskSurface + glow) * uNightFactor * smoothstep(-0.02, 0.05, moonDir.y);
+        }
+
+        vec3 renderSun(vec3 dir, vec3 sunDir, vec3 sunCol) {
+          float cosA = dot(dir, sunDir);
+          float ang = acos(clamp(cosA, -1.0, 1.0));
+          float r = ang / 0.0185;
+
+          float disk = smoothstep(1.0, 0.91, r);
+          float mu = sqrt(max(0.0, 1.0 - clamp(r * r, 0.0, 1.0)));
+          float limb = 1.0 - 0.64 * (1.0 - mu);
+
+          float corona = exp(-ang * 16.0) * 0.75 + exp(-ang * 3.6) * 0.28 + pow(max(0.0, cosA), 96.0) * 0.25;
+          float upFade = smoothstep(-0.035, 0.04, sunDir.y);
+
+          vec3 diskRadiance = sunCol * disk * limb * 4.2;
+          vec3 coronaRadiance = mix(sunCol, uSunsetGlow, uSunsetAmt * 0.65) * corona;
+          return (diskRadiance + coronaRadiance) * upFade * (1.0 - uNightFactor * 0.85);
         }
 
         void main() {
@@ -419,78 +527,68 @@ export class World {
           vec3 sunsetAtmosphere = uSunsetGlow * (sunsetBelt * (0.55 + 0.95 * pow(sunAzimuth, 2.0)) + sunsetDome * pow(sunAzimuth, 4.0) * 0.85);
           sky += sunsetAtmosphere * uSunsetAmt;
 
-          // 3. Sun and Moon Coronas / Atmospheric Halos
-          float sunDot = max(dot(dir, normSunDir), 0.0);
-          float sunCorona = pow(sunDot, 64.0) * 0.45 + pow(sunDot, 12.0) * 0.18;
-          sky += uSunColor * sunCorona * (1.0 - uNightFactor);
+          // 3. Stars and Milky Way
+          sky += renderStars(dir, uNightFactor);
 
-          float moonDot = max(dot(dir, normMoonDir), 0.0);
-          float moonCorona = pow(moonDot, 96.0) * 0.38 + pow(moonDot, 14.0) * 0.14;
-          sky += uMoonColor * moonCorona * uNightFactor * 0.75;
+          // 4. Procedural Sun and Moon Discs (occluded by clouds)
+          vec3 sunRadiance = renderSun(dir, normSunDir, uSunColor);
+          vec3 moonRadiance = renderMoon(dir, normMoonDir, uMoonColor);
 
-          // 4. Subtle background starry sparkle at night
-          if (uNightFactor > 0.05 && h > 0.05) {
-            float starGrid = hash21(floor(dir.xz / (h + 0.1) * 350.0));
-            float starTwinkle = sin(uTime * 4.0 + starGrid * 60.0) * 0.5 + 0.5;
-            float starBrightness = step(0.996, starGrid) * (0.3 + 0.7 * starTwinkle) * smoothstep(0.05, 0.25, h) * uNightFactor;
-            sky += vec3(0.85, 0.92, 1.0) * starBrightness * 0.8;
-          }
+          // 5. Curved Tropospheric Cloud Layer with Cirrus Wisps
+          float totalCloudAlpha = 0.0;
+          vec3 litCloud = vec3(0.0);
 
-          // 5. Planar Troposphere Cloud Layer
-          if (h > -0.05 && uCloudDensity > 0.01) {
-            float planeDist = 1.0 / max(h + 0.18, 0.08);
-            vec2 cloudCoord = (dir.xz * planeDist) * 0.0032 + uWindOffset;
+          if (h > -0.06 && uCloudDensity > 0.01) {
+            float R_earth = 6371.0;
+            float H_cloud = 2.4;
+            float rayDist = (-R_earth * h + sqrt(max(0.0, R_earth * R_earth * h * h + 2.0 * R_earth * H_cloud + H_cloud * H_cloud)));
+            vec2 cloudUv = (dir.xz * rayDist) * 0.065 + uWindOffset;
 
-            // Domain warping for billowing clouds
-            vec2 warp = vec2(fbm(cloudCoord * 1.8 + vec2(0.0, 1.4)), fbm(cloudCoord * 1.8 + vec2(4.3, 2.8)));
-            float rawDensity = fbm(cloudCoord * 2.2 + warp * 0.45);
+            vec2 cirrusUv = (dir.xz * (rayDist * 2.2)) * 0.028 + uWindOffset * 1.6;
+            float cirrusFibre = fbmHigh(cirrusUv * 2.2 + vec2(cirrusUv.y * 0.8, 0.0));
+            float cirrusMask = smoothstep(0.46, 0.82, cirrusFibre) * smoothstep(0.05, 0.35, h) * 0.42;
+
+            vec2 warp = vec2(fbm(cloudUv * 1.6 + vec2(0.0, 1.5)), fbm(cloudUv * 1.6 + vec2(4.3, 2.1)));
+            float rawDensity = fbm(cloudUv * 2.4 + warp * 0.52);
 
             // Weather coverage thresholding
             float cloudThresh = 1.0 - uCloudCoverage;
-            float cloudShape = smoothstep(cloudThresh - 0.18, cloudThresh + 0.22, rawDensity);
-            float horizonFade = smoothstep(-0.02, 0.20, h);
-            float cloudAlpha = clamp(cloudShape * horizonFade * uCloudDensity, 0.0, 1.0);
+            float cloudShape = smoothstep(cloudThresh - 0.16, cloudThresh + 0.22, rawDensity);
+            float horizonFade = smoothstep(-0.04, 0.18, h);
+            float cumulusAlpha = clamp(cloudShape * horizonFade * uCloudDensity, 0.0, 1.0);
+            totalCloudAlpha = clamp(cumulusAlpha + cirrusMask * (1.0 - cumulusAlpha), 0.0, 1.0);
 
-            if (cloudAlpha > 0.002) {
-              // Modeling & Self-Shadowing: sample shifted towards sun
-              vec2 sunShift = normalize(normSunDir.xz + vec2(0.001)) * 0.14;
-              float sunSample = fbm((cloudCoord + sunShift) * 2.2 + warp * 0.45);
-              float directSunIllum = clamp((rawDensity - sunSample * 0.85) * 2.6 + 0.38, 0.15, 1.25);
+            if (totalCloudAlpha > 0.002) {
+              vec2 sunShift = normalize(normSunDir.xz + vec2(0.001)) * 0.15;
+              float sunSample = fbm((cloudUv + sunShift) * 2.4 + warp * 0.52);
+              float directSunIllum = clamp((rawDensity - sunSample * 0.85) * 2.8 + 0.38, 0.16, 1.35);
 
-              // Forward Mie scattering (silver lining on sunlit edges)
-              float forwardScatter = pow(sunDot, 5.0) * (1.0 - cloudShape * 0.75) * 1.35;
+              float sunDot = max(dot(dir, normSunDir), 0.0);
+              float forwardScatter = pow(sunDot, 5.0) * (1.0 - cloudShape * 0.72) * 1.5;
 
-              // Daylight clouds
-              vec3 cloudSunlit = vec3(0.94, 0.93, 0.90) * uSunColor * 1.1;
-              vec3 cloudBelly = mix(uHorizon * 0.65, vec3(0.36, 0.40, 0.48), 0.52);
+              vec3 cloudSunlit = vec3(0.96, 0.95, 0.92) * uSunColor * 1.15;
+              vec3 cloudBelly = mix(uHorizon * 0.7, vec3(0.32, 0.36, 0.44), 0.58);
               vec3 dayCloud = mix(cloudBelly, cloudSunlit, clamp(directSunIllum + forwardScatter, 0.0, 1.0));
 
-              // Golden Hour / Sunset clouds (vibrant peach, coral, salmon, and crimson alpenglow)
-              vec3 sunsetCloud = mix(vec3(0.32, 0.18, 0.26), uSunsetGlow * 1.42, directSunIllum * 0.85 + forwardScatter * 1.3);
+              vec3 sunsetCloud = mix(vec3(0.28, 0.16, 0.24), uSunsetGlow * 1.5, directSunIllum * 0.88 + forwardScatter * 1.35);
 
-              // Night clouds (REALISTIC: dark slate charcoal, subtle moon silver illumination)
-              vec2 moonShift = normalize(normMoonDir.xz + vec2(0.001)) * 0.14;
-              float moonSample = fbm((cloudCoord + moonShift) * 2.2 + warp * 0.45);
-              float moonIllum = clamp((rawDensity - moonSample * 0.85) * 2.0 + 0.25, 0.05, 0.95);
-              float moonScatter = pow(moonDot, 4.0) * (1.0 - cloudShape * 0.7) * 0.35;
-              vec3 nightCloudBase = vec3(0.022, 0.028, 0.042);
-              vec3 nightCloudHighlight = vec3(0.12, 0.16, 0.24) * uMoonColor * 1.2;
-              vec3 nightCloud = mix(nightCloudBase, nightCloudHighlight, clamp(moonIllum * 0.5 + moonScatter, 0.0, 1.0));
+              float moonDot = max(dot(dir, normMoonDir), 0.0);
+              float moonScatter = pow(moonDot, 4.0) * (1.0 - cloudShape * 0.65) * 0.45;
+              vec3 nightCloudBase = vec3(0.014, 0.018, 0.026);
+              vec3 nightCloudLit = vec3(0.14, 0.18, 0.26) * uMoonColor * 1.3;
+              vec3 nightCloud = mix(nightCloudBase, nightCloudLit, clamp(directSunIllum * 0.4 + moonScatter, 0.0, 1.0));
 
-              // Blend day -> sunset -> night
-              vec3 litCloud = mix(dayCloud, sunsetCloud, uSunsetAmt);
+              litCloud = mix(dayCloud, sunsetCloud, uSunsetAmt);
               litCloud = mix(litCloud, nightCloud, uNightFactor);
-
-              // Crepuscular god rays breaking through cloud canopy
-              float rayAngle = atan(dir.x - normSunDir.x, dir.y - normSunDir.y);
-              float rays = sin(rayAngle * 14.0 + uTime * 0.025) * 0.5 + 0.5;
-              rays = pow(rays, 3.0) * pow(sunDot, 2.2) * (1.0 - cloudAlpha * 0.65);
-              vec3 rayColor = mix(uSunColor, uSunsetGlow, uSunsetAmt);
-              sky += rayColor * rays * 0.35 * (1.0 - uNightFactor);
-
-              // Composite cloud layer over sky
-              sky = mix(sky, litCloud, cloudAlpha);
             }
+          }
+
+          // Celestial light is transmitted through clouds (Sun/Moon are occluded behind clouds)
+          float cloudTransmittance = 1.0 - totalCloudAlpha;
+          sky += (sunRadiance + moonRadiance) * cloudTransmittance;
+
+          if (totalCloudAlpha > 0.002) {
+            sky = mix(sky, litCloud, totalCloudAlpha);
           }
 
           gl_FragColor = vec4(sky, 1.0);
@@ -507,7 +605,6 @@ export class World {
     this.eng.scene.add(dome);
     return dome;
   }
-
 
   // ── rain: one mesh of streak quads (bright head, feathered tail) ──────────
   private buildRain() {
@@ -639,7 +736,7 @@ export class World {
   }
 
   // ── layered ground fog with undulating waves, radial feathering, and dual-noise drift ──
-  private buildGroundFog(map: MapDef) {
+  private buildGroundFog(map: MapDef, originFt: { x: number; z: number } = { x: 0, z: 0 }) {
     const W = map.size.w * CELL, H = map.size.h * CELL;
     const deadland = map.biomeBounds?.deadlands?.[0];
     this.deadlandFog = !!deadland;
@@ -653,8 +750,8 @@ export class World {
     }
 
     const nTex = noiseTexture(256);
-    const centerX = deadland ? deadland.x * CELL : W / 2;
-    const centerZ = deadland ? deadland.z * CELL : H / 2;
+    const centerX = (deadland ? deadland.x * CELL : W / 2) + originFt.x;
+    const centerZ = (deadland ? deadland.z * CELL : H / 2) + originFt.z;
 
     const tierHeights = this.isCrypt ? [0.8, 2.2] : [1.4, 3.8, 7.2];
     const tierSpeeds: [number, number][] = [
@@ -670,7 +767,7 @@ export class World {
           uTime: { value: 0 },
           uNoiseTex: { value: nTex },
           uColor: { value: new THREE.Color(this.isCrypt ? 0x0c1618 : 0x1b1d1e) },
-          uOpacity: { value: 0.0 },
+          uOpacity: { value: this.isCrypt ? 0.38 : (this.deadlandFog ? 0.28 : 0.0) },
           uSpeed: { value: new THREE.Vector2(tierSpeeds[i][0], tierSpeeds[i][1]) },
           uTile: { value: new THREE.Vector2(width / (26 + i * 8), height / (26 + i * 8)) },
         },
@@ -729,102 +826,9 @@ export class World {
     }
   }
 
-  // ── volumetric height fog volume: exponential altitude attenuation + solar in-scattering ──
-  private buildHeightFogVolume(map: MapDef) {
-    const W = map.size.w * CELL, H = map.size.h * CELL;
-    const radius = Math.max(W, H) * 0.75 + 160;
-    const volumeHeight = this.isCrypt ? 42 : 180;
-    const geo = new THREE.CylinderGeometry(radius, radius, volumeHeight, 28, 8, true);
-
-    this.heightFogMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 },
-        uCameraPos: { value: new THREE.Vector3() },
-        uFogColor: { value: new THREE.Color(this.isCrypt ? 0x070c0c : 0x4a545e) },
-        uSunColor: { value: new THREE.Color(0xd8c2a2) },
-        uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
-        uBaseHeight: { value: 0.0 },
-        uHeightFalloff: { value: this.isCrypt ? 0.075 : 0.038 },
-        uDensity: { value: 0.22 },
-        uNoiseTex: { value: noiseTexture(256) },
-      },
-      vertexShader: `
-        varying vec3 vWorldPos;
-        varying vec3 vViewPos;
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          vec4 wp = modelMatrix * vec4(position, 1.0);
-          vWorldPos = wp.xyz;
-          vec4 mvp = modelViewMatrix * vec4(position, 1.0);
-          vViewPos = mvp.xyz;
-          gl_Position = projectionMatrix * mvp;
-        }
-      `,
-      fragmentShader: `
-        uniform float uTime;
-        uniform vec3 uCameraPos;
-        uniform vec3 uFogColor;
-        uniform vec3 uSunColor;
-        uniform vec3 uSunDirection;
-        uniform float uBaseHeight;
-        uniform float uHeightFalloff;
-        uniform float uDensity;
-        uniform sampler2D uNoiseTex;
-        varying vec3 vWorldPos;
-        varying vec3 vViewPos;
-        varying vec2 vUv;
-
-        void main() {
-          vec3 toFrag = vWorldPos - uCameraPos;
-          float dist = length(toFrag);
-          vec3 viewDir = normalize(toFrag);
-
-          // Exponential height falloff: dense in low valleys/crypts, thinning above
-          float fragH = max(0.0, vWorldPos.y - uBaseHeight);
-          float camH = max(0.0, uCameraPos.y - uBaseHeight);
-          float avgH = (fragH + camH) * 0.5;
-          float heightFactor = exp(-avgH * uHeightFalloff);
-
-          // Optical depth accumulation along the ray
-          float distFactor = 1.0 - exp(-dist * 0.0075);
-
-          // Billowing atmospheric noise drifting in world space
-          vec2 noiseCoord = vWorldPos.xz * 0.005 + vec2(uTime * 0.0025, uTime * 0.0018);
-          float n = texture2D(uNoiseTex, noiseCoord).r;
-          float mistBillow = 0.72 + 0.38 * n;
-
-          float fogFactor = clamp(distFactor * heightFactor * uDensity * mistBillow, 0.0, 0.88);
-
-          // Forward solar in-scattering (Mie glow when facing sun/moon)
-          float sunDot = max(0.0, dot(viewDir, normalize(uSunDirection)));
-          float sunScatter = pow(sunDot, 5.0) * 0.42;
-          vec3 finalColor = mix(uFogColor, uSunColor, sunScatter);
-
-          // Fade smoothly near camera to prevent hard near-plane clipping
-          float camFade = smoothstep(6.0, 30.0, dist);
-          fogFactor *= camFade;
-
-          if (fogFactor <= 0.002) discard;
-          gl_FragColor = vec4(finalColor, fogFactor);
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
-        }
-      `,
-      side: THREE.DoubleSide,
-      transparent: true,
-      depthWrite: false,
-    });
-
-    this.heightFogVolume = new THREE.Mesh(geo, this.heightFogMat);
-    this.heightFogVolume.position.set(W / 2, volumeHeight / 2 - 5, H / 2);
-    this.heightFogVolume.renderOrder = 2;
-    this.eng.scene.add(this.heightFogVolume);
-  }
-
   // ── volumetric sun & moon light shafts (god rays) ──────────────────────────
-  private buildVolumetricShafts(map: MapDef) {
-    if (this.eng.lowgfx) return; // preserve low-end performance
+  private buildVolumetricShafts(map: MapDef, originFt: { x: number; z: number } = { x: 0, z: 0 }) {
+    if (this.eng.lowgfx) return;
     const W = map.size.w * CELL, H = map.size.h * CELL;
     const baseR = this.isCrypt ? 85 : 340;
     const topR = this.isCrypt ? 12 : 35;
@@ -904,7 +908,7 @@ export class World {
     });
 
     this.sunShafts = new THREE.Mesh(geo, this.sunShaftsMat);
-    this.sunShafts.position.set(W / 2, 70, H / 2);
+    this.sunShafts.position.set(W / 2 + originFt.x, 70, H / 2 + originFt.z);
     this.sunShafts.renderOrder = 3;
     this.eng.scene.add(this.sunShafts);
   }
@@ -925,21 +929,24 @@ export class World {
     }
   }
 
-  onMapTheme(map: MapDef) {
+  onMapTheme(map: MapDef, originFt: { x: number; z: number } = { x: 0, z: 0 }) {
     const tiles = getAreaTileSet(map);
     this.isCrypt = !tiles.outdoor;
     this.clearAtmosphere();
-    this.buildGroundFog(map);
-    this.buildHeightFogVolume(map);
-    this.buildVolumetricShafts(map);
-    this.buildCloudShadows(map);
+
+    const lights: LightDef[] = map.lights.map((l) => ({
+      ...l, x: l.x + originFt.x / CELL, z: l.z + originFt.z / CELL,
+    }));
+    this.buildGroundFog(map, originFt);
+    this.buildVolumetricShafts(map, originFt);
+    this.buildCloudShadows(map, originFt);
 
     const anchors: { x: number; y: number; z: number }[] = [];
-    for (const l of map.lights) {
+    for (const l of lights) {
       const col = new THREE.Color(l.color);
       const braz = l.flicker;                 // flicker = brazier; static = hanging lantern
       const ly = braz ? 5.1 : 8.55;
-      const light = new THREE.PointLight(col, braz ? 320 : 190, l.radiusFt * 1.9, 2); // decay 2 = distance²
+      const light = new THREE.PointLight(col, braz ? 320 : 190, l.radiusFt * 1.9, 2);
       light.position.set(l.x * CELL, ly, l.z * CELL);
       light.castShadow = braz && !this.eng.lowgfx;  // only braziers cast (perf)
       if (light.castShadow) {
@@ -979,11 +986,11 @@ export class World {
       this.torches.push({ light, base: braz ? 330 : 195, phase: Math.random() * 9, sprite, core, w, h, shaft, shaftBase: braz ? 0.05 : 0.042 });
     }
     this.buildEmbers(anchors);
-    this.buildMotes(map.lights);
+    this.buildMotes(lights);
     this.applyWeather();
   }
 
-  private buildCloudShadows(map: MapDef) {
+  private buildCloudShadows(map: MapDef, originFt: { x: number; z: number } = { x: 0, z: 0 }) {
     if (this.cloudShadows) {
       this.eng.scene.remove(this.cloudShadows);
       this.cloudShadows.geometry.dispose();
@@ -1006,9 +1013,9 @@ export class World {
       const heights = terrain.heightFt;
       for (let z = 0; z <= H; z++) for (let x = 0; x <= W; x++) {
         const at = (z * (W + 1) + x) * 3;
-        positions[at] = x * CELL;
+        positions[at] = originFt.x + x * CELL;
         positions[at + 1] = (heights[z * (W + 1) + x] || 0) + 0.20;
-        positions[at + 2] = z * CELL;
+        positions[at + 2] = originFt.z + z * CELL;
         const uvAt = (z * (W + 1) + x) * 2;
         uvs[uvAt] = x / W;
         uvs[uvAt + 1] = 1 - z / H;
@@ -1097,7 +1104,7 @@ export class World {
     this.cloudShadows = new THREE.Mesh(geo, this.cloudShadowMat);
     if (!terrain || terrain.width !== W + 1 || terrain.height !== H + 1) {
       this.cloudShadows.rotation.x = -Math.PI / 2;
-      this.cloudShadows.position.set((W * CELL) / 2, 0.20, (H * CELL) / 2);
+      this.cloudShadows.position.set(originFt.x + (W * CELL) / 2, 0.20, originFt.z + (H * CELL) / 2);
     }
     this.cloudShadows.renderOrder = 1;
     this.eng.scene.add(this.cloudShadows);
@@ -1135,13 +1142,6 @@ export class World {
       (layer.material as THREE.Material).dispose();
     }
     this.groundFogLayers = [];
-    if (this.heightFogVolume) {
-      this.eng.scene.remove(this.heightFogVolume);
-      this.heightFogVolume.geometry.dispose();
-      (this.heightFogVolume.material as THREE.Material).dispose();
-      this.heightFogVolume = null;
-      this.heightFogMat = null;
-    }
     if (this.sunShafts) {
       this.eng.scene.remove(this.sunShafts);
       this.sunShafts.geometry.dispose();
@@ -1160,8 +1160,17 @@ export class World {
 
   update(dt: number, env: { time: number; weather: string; mode: string }) {
     this.t += dt;
-    this.cloudOffset.x += this.wind.x * dt * 0.0006;
-    this.cloudOffset.y += this.wind.z * dt * 0.0006;
+
+    // Smoothly update infinite scene fog and rain transitions
+    this.fogDensity = lerpNum(this.fogDensity, this.fogTarget, dt * 1.5);
+    this.rainAmt = lerpNum(this.rainAmt, this.rainTarget, dt * 1.5);
+    const fogC = this.eng.scene.fog as THREE.FogExp2;
+    if (fogC) fogC.density = this.fogDensity;
+
+    // Steady, visible cloud drift across the sky
+    const cloudSpeed = 0.008;
+    this.cloudOffset.x += this.wind.x * dt * cloudSpeed;
+    this.cloudOffset.y += this.wind.z * dt * cloudSpeed;
 
     this.fireSfxT -= dt;
     if (this.isCrypt && this.fireSfxT <= 0) {
@@ -1180,7 +1189,6 @@ export class World {
     const cloudDensity = wConfig.cloudDensity ?? 1.0;
 
     const bg = this.eng.scene.background as THREE.Color | null;
-    const fogC = this.eng.scene.fog as THREE.FogExp2;
     const skyUniforms = (this.skyDome.material as THREE.ShaderMaterial).uniforms;
 
     const sunAngle = ((hour - 6) / 12) * Math.PI;
@@ -1215,28 +1223,18 @@ export class World {
 
     if (this.isCrypt) {
       bg?.setHex(0x060a0a);
-      fogC.color.setHex(0x070c0c);
+      fogC?.color.setHex(0x070c0c);
     } else {
       bg?.setHex(atmo.horizon);
-      fogC.color.setHex(lerpHex(atmo.horizon, 0x000000, 0.16));
+      fogC?.color.setHex(lerpHex(atmo.horizon, 0x000000, 0.16));
     }
     this.skyDome.position.copy(this.eng.camera.position);
 
     const focus = this.eng.actors.focusPoint();
 
-    // ── sky discs (sun / moon) — outdoors only
-    if (!this.isCrypt) {
-      this.sunDisc.position.set(focus.x + sunDir.x * 480, sunDir.y * 480, focus.z + sunDir.z * 480);
-      const sunVisible = Math.max(0, Math.min(1, (sunDir.y + 0.05) * 6));
-      (this.sunDisc.material as THREE.SpriteMaterial).opacity = sunVisible * (1.0 - atmo.nightFactor * 0.85);
-
-      this.moonDisc.position.set(focus.x + moonDir.x * 480, moonDir.y * 480, focus.z + moonDir.z * 480);
-      const moonVisible = Math.max(0, Math.min(1, (moonDir.y + 0.05) * 6));
-      (this.moonDisc.material as THREE.SpriteMaterial).opacity = moonVisible * atmo.nightFactor * 0.95;
-    } else {
-      (this.sunDisc.material as THREE.SpriteMaterial).opacity = 0;
-      (this.moonDisc.material as THREE.SpriteMaterial).opacity = 0;
-    }
+    // Procedural celestial bodies are rendered cleanly in the sky dome behind clouds
+    (this.sunDisc.material as THREE.SpriteMaterial).opacity = 0;
+    (this.moonDisc.material as THREE.SpriteMaterial).opacity = 0;
 
     // ── directional celestial light (sun during day, moon during night)
     const isDay = sunDir.y > 0.02;
@@ -1271,7 +1269,6 @@ export class World {
     this.hemi.intensity = this.isCrypt ? 0.32 : (isDay ? 0.88 : 0.48);
     this.ambient.color.setHex(this.isCrypt ? 0x6f7d82 : atmo.ambient);
     this.ambient.intensity = this.isCrypt ? 0.3 : (isDay ? 0.80 : 0.44);
-    (this.stars.material as THREE.PointsMaterial).opacity = this.isCrypt ? 0 : Math.min(1, Math.max(0, (atmo.nightFactor - 0.2) * 1.35));
 
     // ── dynamic cloud shadows on landscape
     if (this.cloudShadowMat) {
@@ -1301,7 +1298,6 @@ export class World {
       _v.copy(shaftDir).negate();
       this.sunShafts.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), _v);
     }
-
 
     // ── brazier embers rise + gutter
     if (this.embers) {
@@ -1370,9 +1366,9 @@ export class World {
         const L = (1.0 + d.v * 0.022) * (0.5 + this.rainAmt * 0.5);
         const o = i * 12;
         arr[o] = d.x - sx * gw - ax * L; arr[o + 1] = d.y - sy * gw - ay * L; arr[o + 2] = d.z - sz * gw - az * L;
-        arr[o + 3] = d.x + sx * gw - ax * L; arr[o + 4] = d.y + sy * gw - ay * L; arr[o + 5] = d.z + sz * gw - az * L;
-        arr[o + 6] = d.x - sx * gw + ax * L; arr[o + 7] = d.y - sy * gw + ay * L; arr[o + 8] = d.z - sz * gw + az * L;
-        arr[o + 9] = d.x + sx * gw + ax * L; arr[o + 10] = d.y + sy * gw + ay * L; arr[o + 11] = d.z + sz * gw + az * L;
+        arr[o + 3] = d.x + sx * gw - ax * L; arr[o + 4] = d.y + sy * gw - ay * L; arr[o + 5] = d.z - sz * gw - az * L;
+        arr[o + 6] = d.x - sx * gw + ax * L; arr[o + 7] = d.y - sy * gw + ax * L; arr[o + 8] = d.z - sz * gw + ax * L;
+        arr[o + 9] = d.x + sx * gw + ax * L; arr[o + 10] = d.y + sy * gw + ax * L; arr[o + 11] = d.z + sz * gw + ax * L;
       }
       this.rain.geometry.attributes.position.needsUpdate = true;
     }

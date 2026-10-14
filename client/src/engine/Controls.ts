@@ -107,6 +107,9 @@ export class Controls {
   }
 
   private nearestExit(x: number, z: number) {
+    // streamed world: exits live per region at world feet; dungeons keep the
+    // single-map lookup
+    if (this.eng.grid.worldMode) return this.eng.grid.nearestExitWorld(x, z);
     let nearest: { id: string; distance: number; label: string } | null = null;
     for (const exit of this.eng.grid.map?.exits || []) {
       const distance = Math.hypot(x - exit.x * 5, z - exit.z * 5);

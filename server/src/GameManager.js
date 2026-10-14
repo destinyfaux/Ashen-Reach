@@ -10,6 +10,11 @@ import { attachCombat } from './CombatDriver.js';
 import { buildCharacter } from './rules/CharacterEngine.js';
 import { generateDungeon } from './maps/generator.mjs';
 import { generateOverworld } from './maps/worldGenerator.mjs';
+import {
+  REGION_W, REGION_H, WORLD_SEED,
+  regionId, parseRegionId, regionOriginFt,
+  getWorldContext, generateRegion,
+} from './maps/world.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +45,7 @@ export class GameManager {
       version: 0,
       mapId: startMapId,
       mapName: '',
+      world: null, // streamed-overworld info {seed, regionW, regionH, focus, mapId} while outdoors
       dayNight: {
         mode: 'cycle',
         time: startMapId === 'ashen_reach' ? 10 * 60 : 21 * 60,
@@ -76,6 +82,14 @@ export class GameManager {
     }
     this.maps.set('ashen_reach', generateOverworld({ seed: 73021 }));
     this.dmKey = 'dm_' + this.makeInvite();
+    // P3.3 streamed world: the overworld is a grid of regions; the party's
+    // focus region + its 1-ring are generated and registered on demand.
+    this.worldCtx = null;            // lazy world context (rivers/roads/features)
+    this.worldFocus = null;          // {rx, rz} while the party is in the overworld
+    this.regionBlocks = new Map();   // "rx,rz" -> { walls:Set, halfs:Map } (region-local cells)
+    this.regionProps = new Map();    // "rx,rz" -> world-ft prop colliders
+    this.worldPatch = null;          // pending focus-change payload consumed by ws.js
+    if (startMapId === 'ashen_reach') this.initWorld();
     // director options feed (spawn points from the current map)
     this.directorOpts = () => ({
       spawnPoints: (this.map?.spawns?.monsters || []).map((s) => ({
@@ -86,6 +100,7 @@ export class GameManager {
     });
     attachCombat(this);          // before setMap: first map load uses SRD spawns
     this.setMap(this.state.mapId);
+    this.state.world = this.publicWorld();
     console.log(`[GM] DM key: ${this.dmKey}`);
     console.log(`[GM] invite: ${this.session.inviteCode}`);
   }
@@ -119,6 +134,138 @@ export class GameManager {
   }
 
   getMap(id) { return this.maps.get(id ?? this.state.mapId) || null; }
+
+  // ─── streamed world (P3.3) ──────────────────────────────────────────
+  initWorld() {
+    if (this.worldCtx) return;
+    const home = this.maps.get('ashen_reach');   // raw def feeds the world context
+    this.worldCtx = getWorldContext({ seed: WORLD_SEED, homeDef: home });
+    this.worldFocus = { rx: 0, rz: 0 };
+    // swap the raw home def for the stitched, region-marked one so movement,
+    // blocking and the client all treat it as a streamable region
+    this.maps.delete('ashen_reach');
+    this.ensureRegionRing(0, 0);
+  }
+
+  ensureRegion(rx, rz) {
+    if (!Number.isInteger(rx) || !Number.isInteger(rz)) return false;
+    const id = regionId(rx, rz);
+    if (this.maps.has(id)) return true;
+    if (!this.worldCtx) this.initWorld();
+    try {
+      const def = generateRegion(rx, rz, {
+        seed: WORLD_SEED, ctx: this.worldCtx, homeDef: this.maps.get('ashen_reach'),
+      });
+      this.maps.set(id, def);
+      this.registerRegionData(def, rx, rz);
+      return true;
+    } catch (e) {
+      console.warn('[GM] region generate failed', rx, rz, e.message);
+      return false;
+    }
+  }
+
+  /** Focus region + 1-ring stay registered; farther regions are pruned from
+   *  the def cache (deterministic regeneration on demand). Per-region session
+   *  runtime in mapRuntime is retained for the whole session. */
+  ensureRegionRing(rx, rz) {
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) this.ensureRegion(rx + dx, rz + dz);
+    }
+    for (const id of [...this.maps.keys()]) {
+      const parsed = parseRegionId(id);
+      if (!parsed) continue;
+      if (Math.abs(parsed.rx - rx) > 2 || Math.abs(parsed.rz - rz) > 2) this.maps.delete(id);
+    }
+    for (const key of [...this.regionBlocks.keys()]) {
+      const [kx, kz] = key.split(',').map(Number);
+      if (Math.abs(kx - rx) > 2 || Math.abs(kz - rz) > 2) {
+        this.regionBlocks.delete(key);
+        this.regionProps.delete(key);
+      }
+    }
+  }
+
+  registerRegionData(def, rx, rz) {
+    const key = rx + ',' + rz;
+    const walls = new Set();
+    const halfs = new Map();
+    const addHalf = (cx, cz, orientation) => {
+      const k = cx + ',' + cz;
+      let set = halfs.get(k);
+      if (!set) { set = new Set(); halfs.set(k, set); }
+      set.add(this.normalizeHalfTile(orientation));
+    };
+    for (const cell of def.cells?.wall || []) {
+      if (cell[2]) addHalf(cell[0], cell[1], cell[2]);
+      else walls.add(cell[0] + ',' + cell[1]);
+    }
+    // water is walkable by design (shallow fords) — it no longer blocks movement
+    for (const ht of def.cells?.halfTiles || []) {
+      if (ht.type === 'wall') addHalf(ht.x, ht.z, ht.orientation);
+    }
+    this.regionBlocks.set(key, { walls, halfs });
+    const origin = regionOriginFt(rx, rz);
+    const colliders = [];
+    for (const prop of def.props || []) {
+      if (prop.type === 'building') {
+        const rotated = Math.abs(Math.sin(prop.rotY || 0)) > 0.5;
+        const width = prop.width || 5, depth = prop.depth || 5;
+        const halfX = (rotated ? depth : width) * CELL_FT * 0.82 * 0.44;
+        const halfZ = (rotated ? width : depth) * CELL_FT * 0.82 * 0.44;
+        const centerX = prop.x * CELL_FT + origin.x, centerZ = prop.z * CELL_FT + origin.z;
+        colliders.push({ minX: centerX - halfX, minZ: centerZ - halfZ, maxX: centerX + halfX, maxZ: centerZ + halfZ, tol: 0.85 });
+      } else if (prop.type === 'tree') {
+        const scale = (prop.scale || 1) * (prop.variant === 'dead' ? 1.2 : 1);
+        if (scale <= 1.12) continue;
+        const radius = Math.max(0.65, scale * 0.35);
+        const centerX = prop.x * CELL_FT + origin.x, centerZ = prop.z * CELL_FT + origin.z;
+        colliders.push({ minX: centerX - radius, minZ: centerZ - radius, maxX: centerX + radius, maxZ: centerZ + radius, tol: 0.75 });
+      } else if (prop.type === 'boulder') {
+        const radius = Math.max(1.1, (prop.scale || 1) * 0.75);
+        const centerX = prop.x * CELL_FT + origin.x, centerZ = prop.z * CELL_FT + origin.z;
+        colliders.push({ minX: centerX - radius, minZ: centerZ - radius, maxX: centerX + radius, maxZ: centerZ + radius, tol: 0.85 });
+      }
+    }
+    this.regionProps.set(key, colliders);
+  }
+
+  publicWorld() {
+    if (!this.worldFocus) return null;
+    return {
+      seed: WORLD_SEED,
+      regionW: REGION_W,
+      regionH: REGION_H,
+      focus: { ...this.worldFocus },
+      mapId: this.state.mapId,
+    };
+  }
+
+  /** Seamless border crossing: the token keeps its world position; the party's
+   *  focus region (and the client's render window) follows. No repositioning,
+   *  no runtime reset — overworld regions hold no doors or monsters. */
+  shiftFocus(rx, rz) {
+    if (!this.worldCtx) this.initWorld();
+    if (!this.ensureRegion(rx, rz)) return;
+    this.worldFocus = { rx, rz };
+    this.ensureRegionRing(rx, rz);
+    const id = regionId(rx, rz);
+    this.map = this.maps.get(id);
+    this.state.mapId = id;
+    this.state.mapName = this.map.name || id;
+    this.state.world = this.publicWorld();
+    this.monsterAwareness.clear();
+    this.worldPatch = {
+      world: this.state.world,
+      mapId: this.state.mapId,
+      mapName: this.state.mapName,
+    };
+    this.bump();
+  }
+
+  /** ws.js consumes this after an accepted move to fold the focus change into
+   *  the same state:patch broadcast. */
+  consumeWorldPatch() { const p = this.worldPatch; this.worldPatch = null; return p; }
   doorsForUser(userId) {
     const isDM = this.playerById(userId)?.role === 'dm';
     return (this.state.doors || [])
@@ -239,9 +386,9 @@ export class GameManager {
     };
 
     for (const cell of this.map?.cells?.wall || []) addCell(cell);
-    for (const cell of this.map?.cells?.water || []) addCell(cell);
+    // water is walkable by design (shallow fords) — it no longer blocks movement
     for (const h of this.map?.cells?.halfTiles || []) {
-      if (h.type === 'water' || h.type === 'wall') {
+      if (h.type === 'wall') {
         const key = h.x + ',' + h.z;
         let set = this.halfWallCells.get(key);
         if (!set) { set = new Set(); this.halfWallCells.set(key, set); }
@@ -264,6 +411,25 @@ export class GameManager {
   }
 
   isBlockedAt(x, z) {
+    if (this.worldFocus && this.map?.region) {
+      // streamed world: the point's region holds the blocking data (region-local)
+      const gx = Math.floor(x / CELL_FT), gz = Math.floor(z / CELL_FT);
+      const rx = Math.floor(gx / REGION_W), rz = Math.floor(gz / REGION_H);
+      const blocks = this.regionBlocks.get(rx + ',' + rz);
+      if (!blocks) return true;              // region not loaded -> solid
+      const lx = gx - rx * REGION_W, lz = gz - rz * REGION_H;
+      const key = lx + ',' + lz;
+      if (blocks.walls.has(key)) return true;
+      const half = blocks.halfs.get(key);
+      if (half && half.size > 0) {
+        const u = (x - gx * CELL_FT) / CELL_FT;
+        const v = (z - gz * CELL_FT) / CELL_FT;
+        for (const orientation of half) {
+          if (this.isPointInHalfTile(u, v, orientation)) return true;
+        }
+      }
+      return false;
+    }
     if (!this.map || x < 0 || z < 0 ||
       x >= this.map.size.w * CELL_FT || z >= this.map.size.h * CELL_FT) {
       return true;
@@ -313,6 +479,18 @@ export class GameManager {
   }
 
   overlapsLandscapeProp(x, z) {
+    if (this.worldFocus && this.map?.region) {
+      const gx = Math.floor(x / CELL_FT), gz = Math.floor(z / CELL_FT);
+      const rx = Math.floor(gx / REGION_W), rz = Math.floor(gz / REGION_H);
+      const colliders = this.regionProps.get(rx + ',' + rz);
+      if (!colliders) return false;
+      for (const c of colliders) {
+        const dx = Math.max(c.minX - x, 0, x - c.maxX);
+        const dz = Math.max(c.minZ - z, 0, z - c.maxZ);
+        if (Math.hypot(dx, dz) < (c.tol || 0.85)) return true;
+      }
+      return false;
+    }
     const overlapsCollider = (minX, minZ, maxX, maxZ, tolerance = 0.85) => {
       const dx = Math.max(minX - x, 0, x - maxX);
       const dz = Math.max(minZ - z, 0, z - maxZ);
@@ -475,6 +653,7 @@ export class GameManager {
       }
       this.placeParty();
     }
+    this.state.world = this.map?.region ? this.publicWorld() : null;
     this.bump();
     return true;
   }
@@ -506,15 +685,27 @@ export class GameManager {
       ? this.exitReturnMapId
       : exit.destinationMapId;
     if (typeof destinationId !== 'string' || !this.maps.has(destinationId)) {
-      return { ok: false, reason: 'no_destination' };
+      // region destinations regenerate deterministically when pruned from the
+      // def cache; only truly unknown ids are rejected here
+      const parsed = parseRegionId(destinationId || '');
+      if (!parsed) return { ok: false, reason: 'no_destination' };
     }
     if (!exit.returnToPrevious) this.exitReturnMapId = this.state.mapId;
+    const destRegion = parseRegionId(destinationId);
+    if (destRegion) {
+      if (!this.worldCtx) this.initWorld();
+      if (!this.ensureRegion(destRegion.rx, destRegion.rz)) return { ok: false, reason: 'no_destination' };
+      this.worldFocus = { rx: destRegion.rx, rz: destRegion.rz };
+      this.ensureRegionRing(destRegion.rx, destRegion.rz);
+    }
     if (!this.setMap(destinationId)) return { ok: false, reason: 'no_destination' };
     this.narrate(destinationId === 'ashen_reach'
       ? 'The party emerges into the Ashen Reach.'
       : destinationId === 'ashen_cellar'
         ? 'The party descends into the crypt.'
-        : 'The party returns to the road.', '#7fd4c8');
+        : destRegion
+          ? 'The party presses on into the wilds.'
+          : 'The party returns to the road.', '#7fd4c8');
     this.commit({
       mapId: this.state.mapId,
       mapName: this.state.mapName,
@@ -766,9 +957,13 @@ export class GameManager {
     const dist = Math.hypot(nx - token.x, nz - token.z);
     if (dist > 60) return reject('too_far');
 
-    // Keep predicted movement inside the current map, including small outdoor
-    // transition areas whose perimeter must remain authoritative.
-    if (!this.map || nx < 0 || nz < 0 ||
+    // Bounds: dungeon maps keep their rectangle; the streamed overworld is
+    // bounded by the loaded region set (focus + 1-ring).
+    if (this.worldFocus && this.map?.region) {
+      const gx = Math.floor(nx / CELL_FT), gz = Math.floor(nz / CELL_FT);
+      const rx = Math.floor(gx / REGION_W), rz = Math.floor(gz / REGION_H);
+      if (!this.regionBlocks.has(rx + ',' + rz)) return reject('out_of_bounds');
+    } else if (!this.map || nx < 0 || nz < 0 ||
       nx >= this.map.size.w * CELL_FT || nz >= this.map.size.h * CELL_FT) {
       return reject('out_of_bounds');
     }
@@ -790,6 +985,16 @@ export class GameManager {
     }
     if (Number.isFinite(msg.rotY)) token.rotY = Number(msg.rotY);
     this.bump();
+    // seamless region crossing: follow the party's focus once a token's CELL
+    // crosses a region border (pre-generates the new ring while the mover is
+    // still a region-width away from unloaded terrain)
+    if (this.worldFocus && this.map?.region && !this.state.initiative) {
+      const rx = Math.floor(Math.floor(x / CELL_FT) / REGION_W);
+      const rz = Math.floor(Math.floor(z / CELL_FT) / REGION_H);
+      if (rx !== this.worldFocus.rx || rz !== this.worldFocus.rz) {
+        this.shiftFocus(rx, rz);
+      }
+    }
     // ambush check — monsters close to a PC spring combat
     if (this.checkAmbush) this.checkAmbush();
     return { ok: true };
@@ -846,6 +1051,13 @@ export class GameManager {
         this.dayNightBaseTimestamp = Date.now();
         break;
       case 'map': {
+        const parsedRegion = parseRegionId(String(p.id));
+        if (parsedRegion) {
+          if (!this.worldCtx) this.initWorld();
+          if (!this.ensureRegion(parsedRegion.rx, parsedRegion.rz)) return { error: 'map_not_found' };
+          this.worldFocus = { rx: parsedRegion.rx, rz: parsedRegion.rz };
+          this.ensureRegionRing(parsedRegion.rx, parsedRegion.rz);
+        }
         if (!this.setMap(String(p.id))) return { error: 'map_not_found' };
         break;
       }
@@ -926,6 +1138,7 @@ export class GameManager {
       sessionId: this.session.id,
       mapId: this.state.mapId,
       mapName: this.state.mapName,
+      world: this.publicWorld(),
       dayNight: this.getDayNight(),
       weather: this.state.weather,
       players: [...new Map(this.state.players.map((p) => [p.id, p])).values()],

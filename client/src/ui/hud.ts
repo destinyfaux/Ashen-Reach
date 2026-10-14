@@ -14,6 +14,7 @@ import { useGame } from '../game/store';
 import type { PlayerInfo, TokenState, ChatMsg, DoorState } from '../game/store';
 import { say, dmCmd, sendAction, endTurn, close as netClose } from '../net/client';
 import { Bus, EV } from '../engine/bus';
+import { worldProbe } from '../engine/worldProbe';
 import { icon, weatherIcon, clockIcon, SIGILS } from './sigils';
 import { drawPortrait } from './portrait';
 import { playSfx } from '../audio/music';
@@ -40,6 +41,13 @@ export function mountHud(container: HTMLElement): () => void {
     </div>
 
     <div class="hud-side">
+      <section class="hud-mm" data-mm hidden aria-label="World map">
+        <div class="hud-mm-head">
+          <span class="hud-mm-name" data-mm-name>—</span>
+          <span class="hud-mm-coords" data-mm-coords></span>
+        </div>
+        <canvas class="hud-mm-canvas" data-mm-canvas width="216" height="158"></canvas>
+      </section>
       <div class="hud-things" data-things></div>
       <div class="hud-dm" data-dm hidden>
         <button type="button" class="dm-toggle" data-dm-toggle>${icon('crown', 'ic ic-sm')} DM</button>
@@ -191,6 +199,10 @@ export function mountHud(container: HTMLElement): () => void {
   const cantripBtn = $<HTMLButtonElement>('[data-cantrip]');
   const cantripNameEl = $('[data-cantrip-name]');
   const moveToastEl = $<HTMLElement>('[data-move-toast]');
+  const mmEl = $<HTMLElement>('[data-mm]');
+  const mmCanvas = $<HTMLCanvasElement>('[data-mm-canvas]');
+  const mmNameEl = $('[data-mm-name]');
+  const mmCoordsEl = $('[data-mm-coords]');
 
   // local (client-only) chat lines: system errors / fx narration merged by time
   let extraChat: ChatMsg[] = [];
@@ -690,6 +702,98 @@ export function mountHud(container: HTMLElement): () => void {
   } as typeof s0;
   render(s0);
 
+  // ── world minimap (P3.7): compass, region/cell readout, explored terrain ──
+  const mmCtx = mmCanvas.getContext('2d')!;
+  const MM_COLORS: Record<string, string> = {
+    meadow: '#55743c', forest: '#3c5a35', snow_forest: '#93a89c', snowfield: '#c2ccd2',
+    deadlands: '#544434', mountains: '#7e7a6e', town: '#9c8656', graveyard: '#43443c', ruins: '#655f53',
+  };
+  const MM_WATER = '#27455e', MM_ROAD = '#8a7a58', MM_BG = '#08090b';
+  const MM_VIEW = 72;              // cells shown either side of the party
+  let mmRaf = 0, mmLastDraw = 0, mmLastLabel = '';
+  const drawMinimap = (t: number) => {
+    mmRaf = requestAnimationFrame(drawMinimap);
+    if (t - mmLastDraw < 90) return;   // ~11 fps is plenty for a map
+    mmLastDraw = t;
+    const show = worldProbe.active && worldProbe.regions.length > 0;
+    if (mmEl.hidden === show) mmEl.hidden = !show;
+    if (!show) return;
+    const W = mmCanvas.width, H = mmCanvas.height;
+    const scale = W / (MM_VIEW * 2);   // px per cell
+    const pcx = worldProbe.player.x / 5, pcz = worldProbe.player.z / 5;
+    const minX = Math.floor(pcx - MM_VIEW), maxX = Math.ceil(pcx + MM_VIEW);
+    const minZ = Math.floor(pcz - H / scale / 2), maxZ = Math.ceil(pcz + H / scale / 2);
+    mmCtx.fillStyle = MM_BG;
+    mmCtx.fillRect(0, 0, W, H);
+    for (const region of worldProbe.regions) {
+      const rx0 = Math.round(region.originX / 5), rz0 = Math.round(region.originZ / 5);
+      const x0 = Math.max(0, minX - rx0), x1 = Math.min(region.w - 1, maxX - rx0);
+      const z0 = Math.max(0, minZ - rz0), z1 = Math.min(region.h - 1, maxZ - rz0);
+      if (x1 < x0 || z1 < z0) continue;
+      for (let z = z0; z <= z1; z++) {
+        const row = z * region.w;
+        const sy = (rz0 + z + 0.5 - pcz) * scale + H / 2;
+        for (let x = x0; x <= x1; x++) {
+          const q = row + x;
+          if (region.explored && !region.explored[q]) continue;
+          let color: string;
+          if (region.water && region.water[q]) color = MM_WATER;
+          else if (region.road && region.road[q]) color = MM_ROAD;
+          else if (region.biome) color = MM_COLORS[region.kinds[region.biome[q]]] || '#3a4436';
+          else color = '#3a4436';
+          mmCtx.fillStyle = color;
+          mmCtx.fillRect((rx0 + x + 0.5 - pcx) * scale + W / 2, sy, scale + 0.5, scale + 0.5);
+        }
+      }
+      // region border (surveyed land is divided into 112x96-cell regions)
+      mmCtx.strokeStyle = 'rgba(215, 190, 120, 0.28)';
+      mmCtx.lineWidth = 1;
+      mmCtx.strokeRect(
+        (rx0 - pcx) * scale + W / 2, (rz0 - pcz) * scale + H / 2,
+        region.w * scale, region.h * scale,
+      );
+    }
+    // party marker (arrow = facing)
+    mmCtx.save();
+    mmCtx.translate(W / 2, H / 2);
+    mmCtx.rotate(Math.atan2(Math.cos(worldProbe.player.rotY), Math.sin(worldProbe.player.rotY)) - Math.PI / 2);
+    mmCtx.fillStyle = '#f0d68a';
+    mmCtx.strokeStyle = '#1a1408';
+    mmCtx.lineWidth = 1;
+    mmCtx.beginPath();
+    mmCtx.moveTo(0, -6); mmCtx.lineTo(4.4, 5); mmCtx.lineTo(0, 2.6); mmCtx.lineTo(-4.4, 5);
+    mmCtx.closePath(); mmCtx.fill(); mmCtx.stroke();
+    mmCtx.restore();
+    // compass letters (north = -z, the top of the map)
+    mmCtx.font = '10px Cinzel, serif';
+    mmCtx.fillStyle = '#d7be78';
+    mmCtx.textAlign = 'center';
+    mmCtx.fillText('N', W / 2, 11);
+    mmCtx.fillText('S', W / 2, H - 3);
+    mmCtx.fillText('W', 7, H / 2 + 4);
+    mmCtx.fillText('E', W - 8, H / 2 + 4);
+    // readout: current region + cell
+    let label = '';
+    for (const region of worldProbe.regions) {
+      const lx = worldProbe.player.x - region.originX;
+      const lz = worldProbe.player.z - region.originZ;
+      if (lx < 0 || lz < 0 || lx >= region.w * 5 || lz >= region.h * 5) continue;
+      label = `${region.name} (${region.rx}, ${region.rz}) · cell ${Math.floor(lx / 5)}, ${Math.floor(lz / 5)}`;
+      break;
+    }
+    if (label && label !== mmLastLabel) {
+      mmLastLabel = label;
+      const sep = label.lastIndexOf(' · cell ');
+      mmNameEl.textContent = label.slice(0, sep);
+      mmCoordsEl.textContent = label.slice(sep + 3);
+    } else if (!label && mmLastLabel) {
+      mmLastLabel = '';
+      mmNameEl.textContent = '—';
+      mmCoordsEl.textContent = '';
+    }
+  };
+  mmRaf = requestAnimationFrame(drawMinimap);
+
   // ── chat input ──
   const openChat = () => {
     chatOpenBtn.hidden = true;
@@ -956,6 +1060,7 @@ export function mountHud(container: HTMLElement): () => void {
   window.addEventListener('resize', onResize);
 
   return () => {
+    cancelAnimationFrame(mmRaf);
     offStore(); offRoll(); offPrompt(); offError(); offFx(); offMoveRejected();
     window.clearTimeout(moveToastTimer);
     root.removeEventListener('click', onUiClick);

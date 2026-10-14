@@ -687,9 +687,9 @@ test('dungeon exit returns to the overworld without resetting party or map progr
   assert.ok(patches.some(({ ev, data }) =>
     ev === 'state:patch' && data.mapId === 'ashen_reach' && data.map?.exits?.length));
   gm.lastMoveAt.delete(token.id);
-  token.x = 1;
+  token.x = -555;
   token.z = 90;
-  assert.equal(gm.move(joined.you.id, { x: -1, z: 90 }).reason, 'out_of_bounds');
+  assert.equal(gm.move(joined.you.id, { x: -570, z: 90 }).reason, 'out_of_bounds');
 
   const returnExit = gm.map.exits.find((item) => item.destinationMapId === dungeonId);
   token.x = returnExit.x * 5;
@@ -707,7 +707,7 @@ test('dungeon exit returns to the overworld without resetting party or map progr
   });
 });
 
-test('GameManager movement validates half-tiles: token can walk on dry half of half-water tile, rejected in water half', () => {
+test('GameManager movement validates half-tiles: both halves of a half-water tile are walkable (shallow fords)', () => {
   const gm = new GameManager();
   gm.map = {
     id: 'test_map',
@@ -731,11 +731,36 @@ test('GameManager movement validates half-tiles: token can walk on dry half of h
   const dryMove = gm.move(joined.you.id, { x: 29, z: 29 });
   assert.equal(dryMove.ok, true, 'move onto dry half of half-tile must succeed');
 
-  // Attempt to step into the water half (NW half: x=26, z=26)
+  // Water is walkable by design: stepping into the water half (NW: x=26, z=26)
+  // is a shallow ford, not a barrier
   gm.lastMoveAt.delete(token.id);
   const wetMove = gm.move(joined.you.id, { x: 26, z: 26 });
-  assert.equal(wetMove.ok, false, 'move into water half of half-tile must be rejected');
-  assert.equal(wetMove.reason, 'blocked', 'rejection reason must be blocked');
+  assert.equal(wetMove.ok, true, 'move into water half of half-tile must succeed (shallow ford)');
+});
+
+test('P3.3 streamed world: border crossing shifts focus and far regions reject movement', () => {
+  const gm = new GameManager({ startMapId: 'ashen_reach' });
+  const joined = gm.join({ name: 'Scout' });
+  const token = gm.tokenOf(joined.you.id);
+  assert.deepEqual(gm.state.world.focus, { rx: 0, rz: 0 });
+  // east border of the home region is world x = 560 ft
+  token.x = 545;
+  gm.lastMoveAt.delete(token.id);
+  assert.equal(gm.move(joined.you.id, { x: 555, z: token.z }).ok, true);
+  assert.deepEqual(gm.worldFocus, { rx: 0, rz: 0 });
+  gm.lastMoveAt.delete(token.id);
+  assert.equal(gm.move(joined.you.id, { x: 565, z: token.z }).ok, true);
+  assert.deepEqual(gm.worldFocus, { rx: 1, rz: 0 });
+  assert.equal(gm.state.mapId, 'w1_0');
+  assert.equal(gm.consumeWorldPatch().mapId, 'w1_0');
+  assert.equal(gm.state.world.focus.rx, 1);
+  // token keeps its world position through the focus shift (no repositioning)
+  assert.equal(token.x, 565);
+  // a cell in region 3 is beyond the loaded ring (0..2) → rejected
+  token.x = 1630;
+  gm.lastMoveAt.delete(token.id);
+  assert.equal(gm.move(joined.you.id, { x: 1685, z: token.z }).reason, 'out_of_bounds');
+  assert.deepEqual(gm.worldFocus, { rx: 1, rz: 0 });
 });
 
 test('game time advances along side world time in cycle mode and responds to DM command', () => {

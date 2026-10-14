@@ -4,7 +4,40 @@ This document records checks and evidence that were actually run or inspected. I
 
 ## Current recorded baseline
 
-The latest project status records these automated checks as passing: `npm run typecheck`, `npm test` (90 tests), `npm run build`, and `npm run smoke`. Re-run them before relying on that result; see `STATUS.md` for scope and commands. A local combat-HUD browser review is recorded below; no comprehensive screenshot sweep, VLM score, or browser audio inspection is recorded.
+The latest project status records these automated checks as passing: `npm run typecheck`, `npm test` (113 tests), `npm run build`, and `npm run smoke` (32 checks). Re-run them before relying on that result; see `STATUS.md` for scope and commands. A local combat-HUD browser review is recorded below; no comprehensive screenshot sweep, VLM score, or browser audio inspection is recorded.
+
+## P3.3 streamed world and travel
+
+- Implemented the region-grid world layer (`server/src/maps/world.mjs`), server streaming
+  in `GameManager`/`ws.js`, and additive client streaming in `TileGrid`/`FogOfWar`/
+  `Engine`/`World`/`net/client.ts`. Scope and behavior are described in
+  `ARCHITECTURE.md` (world layer) and `CONTRACTS.md` (streamed world).
+- Automated evidence (run on the project machine, 2026-10-13):
+  - `npm run typecheck` — pass.
+  - `npm test` — 113 tests, 0 failures. Includes the new `server/src/maps/world.test.mjs`
+    (8 tests: region id round-trip, per-region determinism/order independence, home
+    stitch identity + open borders, seam continuity ≤5 ft across 10 region pairs,
+    interior ≤5 ft grades across a 5×5 region band, water grounding/shoreline insets/
+    road walkability/spawn/prop checks for 6 regions, home-river water-cell continuity
+    across the southern seam, stable region names) and two streaming tests in
+    `GameManager.test.js` (eastward crossing shifts focus to `w1_0` without moving the
+    token; a region beyond the loaded ring rejects with `out_of_bounds`; the raw-home
+    dungeon-exit test now probes the boundary at the unloaded ring instead of the old
+    single-map edge).
+  - `npm run build` — pass.
+  - `npm run smoke` — 32 checks pass, including the new streamed-world section:
+    `state:sync` carries `world {seed, regionW, regionH, focus}`, `GET /api/map/w1_0`
+    serves the east region def, a walked client crosses the eastern border (focus patch
+    to `w1_0`), walks back west (focus restores to `ashen_reach`), and the full
+    town→crypt→overworld round trip still passes.
+  - Manual generator probes: worst interior terrain step across a 25-region band
+    4.41 ft; worst seam step home→(0,1) 2.19 ft (all other measured seams 0.00 ft);
+    river water cells continue 10/10 across the home/south border columns.
+- Not verified (no browser in the editing environment; the local game server is not
+  reachable from it): rendered appearance of streamed neighbor regions, visual seam
+  behavior, per-region fog across borders, focus-shift hitching in a real client, and
+  region-fetch timing on the network. No screenshot was taken and no VLM review was
+  run. Do not treat the streamed window as visually accepted.
 
 ## HUD self-status redesign
 
@@ -292,3 +325,4 @@ For each meaningful manual/browser review, record date, commit or worktree revis
   hardware; no screenshot was saved and no VLM review was run.
 - Verification on 2026-10-12: `npm run typecheck`, `npm test`, and `npm run build`
   passed, as did `npm run smoke`.
+- Verification on 2026-10-13 (PCG v2 streamed world + minimap): `npm run typecheck`, `npm test` (119 pass, incl. 14 world tests: determinism/order-independence, home ring seam continuity <=5 ft, interior grades across a 5x5 band, grounded water/walkable roads/prop variety, home-river southern-seam continuity, meadow halo through ring 2, walled graveyard in a ring-1 region, every world river terminating in a lake with monotonic surface levels, pond biome lock, mountain-country seam/grade in the 3-5 ring, temple/fortress ruin sites), `npm run build`, and `npm run smoke` (33 checks incl. eastward border crossing with focus shift and the full crypt round trip) all passed on the project machine (run via the AgentHarness shell gateway). A local functional probe also measured: seam steps 0.00-2.17 ft across ring pairs and mountain pairs, worst interior vertex grade 4.50 ft, worst water-surface-to-ground 1.95 ft, 8 rivers all reaching lakes (133-831 samples), 8+ large lakes, biome spread over a +/-9 region sparse scan. NOT verified in a browser: streamed-window visuals (mountain silhouettes, seam appearance, fog, the new ruin/graveyard props, minimap rendering). No screenshots and no VLM review; do not treat the streamed window as visually approved.

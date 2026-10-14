@@ -1,6 +1,6 @@
 // materials.ts — ASHENREACH procedural texture + material library (T2-d art pass).
 // 100% canvas-generated (zero downloads), seeded (deterministic per variant), cached.
-// PBR-ish: color map + bump map per kind; roughness/metalness via material params.
+// PBR: Albedo map + Sobel Normal map + Roughness/AO cavity map + Parallax Depth.
 //
 // Art direction (ARCHITECTURE.md — law):
 //   charcoal #0d0f12 · bone #cfc6b8 · ember gold #b8952f · blood #7a1f1f · crypt #3d5a5a
@@ -9,6 +9,7 @@
 // Kinds:
 //   flagstone(v0 cellar stone, v1 crypt)  brick(v0 intact, v1 ruined/missing bricks)
 //   wood(old planks)  iron(v0 sooty, v1 rusted)  bone(pale accent stone)  ember(coal glow)
+//   cobble(rounded stones)  ash_dirt(wilderness)  ash_grass(wilderness)  bark(v0-v4 trees)
 import * as THREE from 'three';
 
 export const PALETTE = {
@@ -42,12 +43,19 @@ export function rngFrom(h: number): () => number {
   return rng(Math.max(1, (h * 0x7fffffff) | 0));
 }
 
-interface TextureSet { map: THREE.CanvasTexture; bump: THREE.CanvasTexture; }
+export interface TextureSet {
+  map: THREE.CanvasTexture;
+  bump: THREE.CanvasTexture;
+  normal: THREE.CanvasTexture;
+  roughnessMap: THREE.CanvasTexture;
+  aoMap: THREE.CanvasTexture;
+  heightMap: THREE.CanvasTexture;
+}
 
 function mkCanvas(w: number, h = w) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
-  return { c, g: c.getContext('2d')! };
+  return { c, g: c.getContext('2d', { willReadFrequently: true })! };
 }
 
 function toTex(c: HTMLCanvasElement, srgb: boolean): THREE.CanvasTexture {
@@ -72,10 +80,100 @@ function wrap9(g: CanvasRenderingContext2D, S: number, x: number, y: number, dra
   }
 }
 
+/** Stable per-pock alpha (wrap9 copies must match) */
+function r0(x: number, y: number) {
+  return hash2(x * 10 | 0, y * 10 | 0, 0x9c);
+}
+
+/**
+ * Derives Tangent Space Normal, Roughness, and Cavity AO maps from a Height Canvas.
+ * Uses a wrapped 3x3 Sobel kernel to preserve seamless tiling.
+ */
+function derivePBRMaps(heightCanvas: HTMLCanvasElement, normalStrength = 2.4): {
+  normalTex: THREE.CanvasTexture;
+  roughnessTex: THREE.CanvasTexture;
+  aoTex: THREE.CanvasTexture;
+} {
+  const S = heightCanvas.width;
+  const ctx = heightCanvas.getContext('2d')!;
+  const src = ctx.getImageData(0, 0, S, S).data;
+
+  const normCanv = mkCanvas(S);
+  const roughCanv = mkCanvas(S);
+  const aoCanv = mkCanvas(S);
+
+  const normImg = normCanv.g.createImageData(S, S);
+  const roughImg = roughCanv.g.createImageData(S, S);
+  const aoImg = aoCanv.g.createImageData(S, S);
+
+  const nd = normImg.data;
+  const rd = roughImg.data;
+  const aod = aoImg.data;
+
+  const getH = (x: number, y: number): number => {
+    const wx = ((x % S) + S) % S;
+    const wy = ((y % S) + S) % S;
+    return src[(wy * S + wx) * 4] / 255.0;
+  };
+
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const idx = (y * S + x) * 4;
+
+      // 3x3 Sobel kernel
+      const tl = getH(x - 1, y - 1);
+      const t  = getH(x, y - 1);
+      const tr = getH(x + 1, y - 1);
+      const l  = getH(x - 1, y);
+      const r  = getH(x + 1, y);
+      const bl = getH(x - 1, y + 1);
+      const b  = getH(x, y + 1);
+      const br = getH(x + 1, y + 1);
+
+      const dX = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+      const dY = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
+
+      let nx = -dX * normalStrength;
+      let ny = dY * normalStrength;
+      let nz = 1.0;
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1.0;
+      nx /= len; ny /= len; nz /= len;
+
+      nd[idx]     = Math.round((nx * 0.5 + 0.5) * 255);
+      nd[idx + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      nd[idx + 2] = Math.round((nz * 0.5 + 0.5) * 255);
+      nd[idx + 3] = 255;
+
+      const centerH = src[idx] / 255.0;
+
+      // Roughness: Crevices/mortar are gritty (rough), tops of stone/wood are polished
+      const roughVal = Math.round(THREE.MathUtils.clamp((0.96 - centerH * 0.35) * 255, 60, 255));
+      rd[idx] = rd[idx + 1] = rd[idx + 2] = roughVal;
+      rd[idx + 3] = 255;
+
+      // Cavity AO: Sunken joints and cracks receive contact shadowing
+      const aoVal = Math.round(THREE.MathUtils.clamp((0.28 + Math.pow(centerH, 1.3) * 0.72) * 255, 0, 255));
+      aod[idx] = aod[idx + 1] = aod[idx + 2] = aoVal;
+      aod[idx + 3] = 255;
+    }
+  }
+
+  normCanv.g.putImageData(normImg, 0, 0);
+  roughCanv.g.putImageData(roughImg, 0, 0);
+  aoCanv.g.putImageData(aoImg, 0, 0);
+
+  const aoTex = toTex(aoCanv.c, false);
+  (aoTex as unknown as { channel?: number }).channel = 0; // Use uv0 for aoMap
+
+  return {
+    normalTex: toTex(normCanv.c, false),
+    roughnessTex: toTex(roughCanv.c, false),
+    aoTex,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// (a) dungeon flagstone — irregular slabs, per-slab tone jitter, cracks, chips,
-//     grime AO in the gaps, moss in the corners (crypt variant much more).
-//     Shared jittered lattice wraps => seamless tiling.
+// (a) dungeon flagstone
 // ─────────────────────────────────────────────────────────────────────────────
 function buildFlagstone(variant: number): TextureSet {
   const S = 512, N = 8, cell = S / N;
@@ -97,9 +195,9 @@ function buildFlagstone(variant: number): TextureSet {
     return [x * cell + jx[gy][gx], y * cell + jy[gy][gx]];
   };
 
-  g.fillStyle = crypt ? '#0a0d0b' : '#121009';  // gap grime (charcoal)
+  g.fillStyle = crypt ? '#0a0d0b' : '#121009';
   g.fillRect(0, 0, S, S);
-  b.fillStyle = '#000'; b.fillRect(0, 0, S, S);
+  b.fillStyle = '#080808'; b.fillRect(0, 0, S, S);
 
   const base = crypt ? [64, 70, 66] : [82, 78, 69];
   // -1..N so border slabs spill and tile seamlessly (same lattice hash => same tone)
@@ -141,11 +239,20 @@ function buildFlagstone(variant: number): TextureSet {
 
     // bump: slabs raised with per-slab height jitter, seams sunk to black
     poly(b, pts);
-    const bt = Math.round(105 + tone * 80);
+    const bt = Math.round(145 + tone * 90);
     b.fillStyle = `rgb(${bt},${bt},${bt})`; b.fill();
     b.save(); poly(b, pts); b.clip();
-    b.save(); b.translate(0, -2.2); poly(b, pts); b.strokeStyle = 'rgba(255,255,255,0.5)'; b.lineWidth = 3; b.stroke(); b.restore();
-    b.save(); b.translate(0, 2.6); poly(b, pts); b.strokeStyle = 'rgba(0,0,0,0.55)'; b.lineWidth = 4; b.stroke(); b.restore();
+    b.save(); b.translate(0, -2.2); poly(b, pts); b.strokeStyle = 'rgba(255,255,255,0.6)'; b.lineWidth = 3; b.stroke(); b.restore();
+    b.save(); b.translate(0, 2.6); poly(b, pts); b.strokeStyle = 'rgba(0,0,0,0.7)'; b.lineWidth = 4; b.stroke(); b.restore();
+    if (r() < 0.42) {
+      b.strokeStyle = 'rgb(20,20,20)'; b.lineWidth = 1.4 + r() * 1.2;
+      b.beginPath();
+      let cxx = cx + (r() - 0.5) * cell * 0.5, cyy = cy + (r() - 0.5) * cell * 0.5;
+      b.moveTo(cxx, cyy);
+      const steps = 3 + Math.floor(r() * 3);
+      for (let i = 0; i < steps; i++) { cxx += (r() - 0.5) * cell * 0.7; cyy += (r() - 0.5) * cell * 0.7; b.lineTo(cxx, cyy); }
+      b.stroke();
+    }
     b.restore();
   }
 
@@ -177,7 +284,17 @@ function buildFlagstone(variant: number): TextureSet {
       gg.fillStyle = rg; gg.beginPath(); gg.arc(0, 0, br, 0, Math.PI * 2); gg.fill();
     });
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+
+  const pbr = derivePBRMaps(cb.c, 3.2);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -190,8 +307,8 @@ function buildBrick(variant: number): TextureSet {
   const cm = mkCanvas(S), cb = mkCanvas(S);
   const g = cm.g, b = cb.g;
 
-  g.fillStyle = '#17140f'; g.fillRect(0, 0, S, S);  // mortar
-  b.fillStyle = '#000'; b.fillRect(0, 0, S, S);
+  g.fillStyle = '#17140f'; g.fillRect(0, 0, S, S);
+  b.fillStyle = '#0a0a0a'; b.fillRect(0, 0, S, S);
 
   for (let r = 0; r < rows; r++) {
     const off = (r % 2) * bw * 0.5;
@@ -204,7 +321,7 @@ function buildBrick(variant: number): TextureSet {
         g.fillStyle = '#0b0906'; g.fillRect(x, y, w, h);
         g.fillStyle = 'rgb(52,47,40)';
         g.fillRect(x, y + h * 0.45, w * (0.3 + rr() * 0.4), h * 0.55);
-        b.fillStyle = '#000'; b.fillRect(x, y, w, h);
+        b.fillStyle = '#050505'; b.fillRect(x, y, w, h);
         continue;
       }
       const tone = 0.72 + rr() * 0.42;
@@ -228,10 +345,10 @@ function buildBrick(variant: number): TextureSet {
         for (let i = 0; i < 4; i++) { cxx += (rr() - 0.5) * 10; cyy += h / 4; g.lineTo(cxx, cyy); }
         g.stroke();
       }
-      const bt = Math.round(112 + tone * 84);
+      const bt = Math.round(150 + tone * 90);
       b.fillStyle = `rgb(${bt},${bt},${bt})`; b.fillRect(x, y, w, h);
-      b.fillStyle = 'rgba(255,255,255,0.35)'; b.fillRect(x, y, w, 3);
-      b.fillStyle = 'rgba(0,0,0,0.5)'; b.fillRect(x, y + h - 3, w, 3);
+      b.fillStyle = 'rgba(255,255,255,0.45)'; b.fillRect(x, y, w, 3);
+      b.fillStyle = 'rgba(0,0,0,0.6)'; b.fillRect(x, y + h - 3, w, 3);
     }
   }
 
@@ -249,7 +366,17 @@ function buildBrick(variant: number): TextureSet {
     const a = 0.06 + sr() * 0.09;
     wrap9(g, S, x, 0, (gg) => { gg.fillStyle = `rgba(8,7,5,${a})`; gg.fillRect(-w2 / 2, y0, w2, h2); });
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+
+  const pbr = derivePBRMaps(cb.c, 3.4);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,7 +387,7 @@ function buildWood(): TextureSet {
   const cm = mkCanvas(S), cb = mkCanvas(S);
   const g = cm.g, b = cb.g;
   g.fillStyle = '#0d0a07'; g.fillRect(0, 0, S, S);
-  b.fillStyle = '#000'; b.fillRect(0, 0, S, S);
+  b.fillStyle = '#101010'; b.fillRect(0, 0, S, S);
 
   for (let p = 0; p < P; p++) {
     const r = rngFrom(hash2(p, 3, 0x700d));
@@ -294,13 +421,23 @@ function buildWood(): TextureSet {
       g.fillStyle = 'rgba(190,180,160,0.5)'; g.beginPath(); g.arc(nx - 0.7, ny - 0.7, 0.8, 0, Math.PI * 2); g.fill();
     }
     // bump
-    const bt = Math.round(120 + tone * 70);
+    const bt = Math.round(140 + tone * 75);
     b.fillStyle = `rgb(${bt},${bt},${bt})`; b.fillRect(x, 0, w, S);
     for (const [nx, ny] of nails) {
       b.fillStyle = 'rgba(255,255,255,0.85)'; b.beginPath(); b.arc(nx, ny, 2.2, 0, Math.PI * 2); b.fill();
     }
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+
+  const pbr = derivePBRMaps(cb.c, 2.6);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,7 +450,7 @@ function buildIron(variant: number): TextureSet {
   const cm = mkCanvas(S), cb = mkCanvas(S);
   const g = cm.g, b = cb.g;
   g.fillStyle = sooty ? '#1b1d20' : '#26241f'; g.fillRect(0, 0, S, S);
-  b.fillStyle = 'rgb(58,58,58)'; b.fillRect(0, 0, S, S);
+  b.fillStyle = 'rgb(75,75,75)'; b.fillRect(0, 0, S, S);
 
   const r = rng(0x1204 + variant * 17);
   for (let i = 0; i < 30; i++) {  // patina mottle
@@ -335,11 +472,11 @@ function buildIron(variant: number): TextureSet {
     g.fillStyle = '#2e3136'; g.fillRect(0, by - 12, S, 24);
     g.fillStyle = 'rgba(255,255,255,0.07)'; g.fillRect(0, by - 12, S, 3);
     g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(0, by + 9, S, 3);
-    b.fillStyle = 'rgb(120,120,120)'; b.fillRect(0, by - 12, S, 24);
+    b.fillStyle = 'rgb(140,140,140)'; b.fillRect(0, by - 12, S, 24);
     for (let x = 16; x < S; x += 32) {
       g.fillStyle = '#3c4046'; g.beginPath(); g.arc(x, by, 3.4, 0, Math.PI * 2); g.fill();
       g.fillStyle = 'rgba(0,0,0,0.5)'; g.beginPath(); g.arc(x + 0.8, by + 0.9, 2.6, 0, Math.PI * 2); g.fill();
-      b.fillStyle = 'rgb(210,210,210)'; b.beginPath(); b.arc(x, by, 3.4, 0, Math.PI * 2); b.fill();
+      b.fillStyle = 'rgb(220,220,220)'; b.beginPath(); b.arc(x, by, 3.4, 0, Math.PI * 2); b.fill();
     }
   }
   for (let i = 0; i < 7; i++) {  // scratches
@@ -348,7 +485,17 @@ function buildIron(variant: number): TextureSet {
     const x0 = r() * S, y0 = r() * S;
     g.beginPath(); g.moveTo(x0, y0); g.lineTo(x0 + (r() - 0.5) * 70, y0 + (r() - 0.5) * 26); g.stroke();
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+
+  const pbr = derivePBRMaps(cb.c, 2.2);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -359,7 +506,7 @@ function buildBone(): TextureSet {
   const cm = mkCanvas(S), cb = mkCanvas(S);
   const g = cm.g, b = cb.g;
   g.fillStyle = '#b0aa9b'; g.fillRect(0, 0, S, S);
-  b.fillStyle = 'rgb(150,150,150)'; b.fillRect(0, 0, S, S);
+  b.fillStyle = 'rgb(160,160,160)'; b.fillRect(0, 0, S, S);
 
   const r = rng(0xb0be);
   for (let i = 0; i < 22; i++) {  // mottling
@@ -396,11 +543,22 @@ function buildBone(): TextureSet {
       gg.beginPath(); gg.arc(0, 0, pr, 0, Math.PI * 2); gg.fill();
     });
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
-}
-// stable per-pock alpha (wrap9 copies must match)
-function r0(x: number, y: number) { return hash2(x * 10 | 0, y * 10 | 0, 0x9c); }
 
+  const pbr = derivePBRMaps(cb.c, 2.4);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (f) cobblestone
+// ─────────────────────────────────────────────────────────────────────────────
 function buildCobble(): TextureSet {
   const S = 512, N = 8, cell = S / N;
   const cm = mkCanvas(S), cb = mkCanvas(S);
@@ -432,12 +590,33 @@ function buildCobble(): TextureSet {
     g.save(); poly(g, polyPts); g.clip();
     g.strokeStyle = 'rgba(238,224,194,0.12)'; g.lineWidth = 3; g.stroke();
     g.restore();
-    const bump = Math.round(110 + tone * 80);
-    b.fillStyle = `rgb(${bump},${bump},${bump})`; poly(b, polyPts); b.fill();
+
+    // Curved height profile per cobblestone
+    const rDist = cell * 0.44;
+    const grad = b.createRadialGradient(cx, cy, 0, cx, cy, rDist);
+    const bump = Math.round(155 + tone * 95);
+    grad.addColorStop(0, `rgb(${bump},${bump},${bump})`);
+    grad.addColorStop(0.7, `rgb(${Math.round(bump * 0.8)},${Math.round(bump * 0.8)},${Math.round(bump * 0.8)})`);
+    grad.addColorStop(1, '#080808');
+    b.fillStyle = grad;
+    poly(b, polyPts); b.fill();
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+
+  const pbr = derivePBRMaps(cb.c, 3.8);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// (g) ash ground / grass
+// ─────────────────────────────────────────────────────────────────────────────
 function buildAshGround(kind: 'ash_dirt' | 'ash_grass', variant: number): TextureSet {
   const S = 512;
   const cm = mkCanvas(S), cb = mkCanvas(S);
@@ -446,7 +625,7 @@ function buildAshGround(kind: 'ash_dirt' | 'ash_grass', variant: number): Textur
   const road = variant > 0;
   const base = grass ? [45, 55, 43] : road ? [59, 53, 46] : [67, 57, 46];
   g.fillStyle = `rgb(${base.join(',')})`; g.fillRect(0, 0, S, S);
-  b.fillStyle = 'rgb(105,105,105)'; b.fillRect(0, 0, S, S);
+  b.fillStyle = 'rgb(110,110,110)'; b.fillRect(0, 0, S, S);
   const random = rng((grass ? 0xa551 : 0xd17) + variant * 7919);
   for (let i = 0; i < 180; i++) {
     const x = random() * S, y = random() * S, radius = 5 + random() * 30;
@@ -461,7 +640,7 @@ function buildAshGround(kind: 'ash_dirt' | 'ash_grass', variant: number): Textur
       ctx.fillStyle = gradient; ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.fill();
     });
     wrap9(b, S, x, y, (ctx) => {
-      ctx.fillStyle = `rgba(${shade > 0 ? '210,210,210' : '20,20,20'},${alpha * 1.8})`;
+      ctx.fillStyle = `rgba(${shade > 0 ? '220,220,220' : '20,20,20'},${alpha * 1.8})`;
       ctx.beginPath(); ctx.arc(0, 0, radius * 0.75, 0, Math.PI * 2); ctx.fill();
     });
   }
@@ -486,7 +665,17 @@ function buildAshGround(kind: 'ash_dirt' | 'ash_grass', variant: number): Textur
       });
     }
   }
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+
+  const pbr = derivePBRMaps(cb.c, 2.2);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -538,7 +727,7 @@ function buildBark(variant = 0): TextureSet {
       b.fillRect(fx - 2, 0, 4, S);
 
       // Ridge highlights on plate center
-      b.fillStyle = `rgb(${Math.round(130 + plateTone * 60)},${Math.round(130 + plateTone * 60)},${Math.round(130 + plateTone * 60)})`;
+      b.fillStyle = `rgb(${Math.round(140 + plateTone * 70)},${Math.round(140 + plateTone * 70)},${Math.round(140 + plateTone * 70)})`;
       b.fillRect(fx + 3, 0, furrowWidth - 6, S);
     }
   } else {
@@ -649,7 +838,114 @@ function buildBark(variant = 0): TextureSet {
     }
   }
 
-  return { map: toTex(cm.c, true), bump: toTex(cb.c, false) };
+  const pbr = derivePBRMaps(cb.c, 3.2);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parallax Occlusion Shader Injection
+// Reconstructs physical relief depth by raymarching height in tangent space.
+// Hooked safely at <project_vertex> after transformedNormal and mvPosition exist.
+// ─────────────────────────────────────────────────────────────────────────────
+export function enableParallaxOcclusion(
+  material: THREE.MeshStandardMaterial,
+  heightTexture: THREE.Texture,
+  scale = 0.045,
+  minLayers = 16,
+  maxLayers = 36
+) {
+  material.defines = material.defines || {};
+  material.defines['USE_PARALLAX_OCCLUSION'] = '';
+
+  material.customProgramCacheKey = () => `POM_${scale}_${minLayers}_${maxLayers}`;
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms['uPomHeightMap'] = { value: heightTexture };
+    shader.uniforms['uPomScale'] = { value: scale };
+    shader.uniforms['uPomMinLayers'] = { value: minLayers };
+    shader.uniforms['uPomMaxLayers'] = { value: maxLayers };
+
+    // Vertex: Pass tangent-space view direction
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vPomViewDirTS;
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `#include <project_vertex>
+       #ifdef USE_PARALLAX_OCCLUSION
+         vec3 vPomN = normalize(transformedNormal);
+         vec3 vPomUp = abs(vPomN.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+         vec3 vPomT = normalize(cross(vPomUp, vPomN));
+         vec3 vPomB = normalize(cross(vPomN, vPomT));
+         vec3 vPomV = normalize(-mvPosition.xyz);
+         vPomViewDirTS = vec3(dot(vPomV, vPomT), dot(vPomV, vPomB), dot(vPomV, vPomN));
+       #endif
+      `
+    );
+
+    // Fragment: raymarch heightfield layers
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>
+       #ifdef USE_PARALLAX_OCCLUSION
+         uniform sampler2D uPomHeightMap;
+         uniform float uPomScale;
+         uniform float uPomMinLayers;
+         uniform float uPomMaxLayers;
+         varying vec3 vPomViewDirTS;
+
+         vec2 computeParallaxOcclusion(vec2 uv, vec3 viewDirTS) {
+           float numLayers = mix(uPomMaxLayers, uPomMinLayers, abs(dot(vec3(0.0, 0.0, 1.0), viewDirTS)));
+           float layerDepth = 1.0 / numLayers;
+           float currentLayerDepth = 0.0;
+           vec2 P = viewDirTS.xy * uPomScale;
+           vec2 deltaTexCoords = P / numLayers;
+
+           vec2 currentTexCoords = uv;
+           float currentDepth = 1.0 - texture2D(uPomHeightMap, currentTexCoords).r;
+
+           for (int i = 0; i < 48; i++) {
+             if (currentLayerDepth >= currentDepth) break;
+             currentTexCoords -= deltaTexCoords;
+             currentDepth = 1.0 - texture2D(uPomHeightMap, currentTexCoords).r;
+             currentLayerDepth += layerDepth;
+           }
+
+           vec2 prevTexCoords = currentTexCoords + deltaTexCoords;
+           float afterDepth = currentDepth - currentLayerDepth;
+           float beforeDepth = (1.0 - texture2D(uPomHeightMap, prevTexCoords).r) - currentLayerDepth + layerDepth;
+           float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
+
+           return mix(currentTexCoords, prevTexCoords, weight);
+         }
+       #endif
+      `
+    );
+
+    // Redirect subsequent texture lookups to POM-offset UVs
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <uv_fragment>',
+      `#include <uv_fragment>
+       #ifdef USE_PARALLAX_OCCLUSION
+         vec2 pomUv = computeParallaxOcclusion(vUv, vPomViewDirTS);
+         #define vUv pomUv
+       #endif
+      `
+    );
+  };
+  material.needsUpdate = true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -679,14 +975,14 @@ export interface AreaTileSet {
   trim: { woodVariant: number; ironVariant: number; sootVariant: number };
 }
 
-const CELLAR_TILESET: AreaTileSet = {
+export const CELLAR_TILESET: AreaTileSet = {
   id: 'cellar', outdoor: false, ambience: 'crypt',
   floor: { kind: 'flagstone', variant: 0, repeatFt: 27.5, roughness: 0.96, bumpScale: 0.45, metalness: 0.02 },
   wall: { kind: 'brick', intactVariant: 0, ruinedVariant: 1 },
   trim: { woodVariant: 0, ironVariant: 1, sootVariant: 0 },
 };
 
-const AREA_TILESETS: Record<string, AreaTileSet> = {
+export const AREA_TILESETS: Record<string, AreaTileSet> = {
   cellar: CELLAR_TILESET,
   crypt: { ...CELLAR_TILESET, id: 'crypt', floor: { ...CELLAR_TILESET.floor, variant: 1 } },
   dungeon: { ...CELLAR_TILESET, id: 'dungeon', floor: { ...CELLAR_TILESET.floor, variant: 1 } },
@@ -718,7 +1014,7 @@ export function getAreaTileSet(map: { theme?: string; floor?: string; tileSet?: 
     AREA_TILESETS[keyOf(map.floor)] || CELLAR_TILESET;
 }
 
-/** Cached procedural texture pair (color + bump) for a kind/variant. */
+/** Cached procedural texture set for a kind/variant. */
 export function getTextureSet(kind: string, variant = 0): TextureSet {
   const key = `${kind}:${variant}`;
   let set = texCache.get(key);
@@ -736,6 +1032,7 @@ export function getMaterial(kind: string, variant = 0): THREE.Material {
   const key = `${kind}:${variant}`;
   const hit = matCache.get(key);
   if (hit) return hit;
+
   let m: THREE.MeshStandardMaterial;
   if (kind === 'ember') {  // glowing coal bed (braziers)
     m = new THREE.MeshStandardMaterial({
@@ -757,10 +1054,21 @@ export function getMaterial(kind: string, variant = 0): THREE.Material {
       metalness = 0.01;
       bumpScale = variant === 3 ? 0.38 : variant === 4 ? 0.72 : 0.65;
     }
+
     m = new THREE.MeshStandardMaterial({
-      map: set.map, bumpMap: set.bump, bumpScale, roughness, metalness
+      map: set.map,
+      normalMap: set.normal,
+      normalScale: new THREE.Vector2(bumpScale * 2.2, bumpScale * 2.2),
+      roughnessMap: set.roughnessMap,
+      aoMap: set.aoMap,
+      aoMapIntensity: 1.15,
+      bumpMap: set.bump,
+      bumpScale,
+      roughness,
+      metalness
     });
   }
+
   matCache.set(key, m);
   return m;
 }

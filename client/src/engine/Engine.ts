@@ -4,6 +4,10 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { createGradePass } from './grade';
 import { World } from './World';
 import { TileGrid } from './TileGrid';
 import { FogOfWar } from './FogOfWar';
@@ -18,6 +22,15 @@ import type { MapDef } from './types';
 import { playSfx } from '../audio/music';
 import { setMusicScene } from '../audio/music';
 import { getAreaTileSet } from './materials';
+import { worldProbe } from './worldProbe';
+import type { GameStore } from '../game/store';
+
+/** Region id scheme — mirrors server/src/maps/world.mjs regionId(). */
+function regionIdOf(rx: number, rz: number): string {
+  if (rx === 0 && rz === 0) return 'ashen_reach';
+  const enc = (n: number) => (n < 0 ? 'm' + Math.abs(n) : String(n));
+  return `w${enc(rx)}_${enc(rz)}`;
+}
 
 export class Engine {
   renderer: THREE.WebGLRenderer;
@@ -40,8 +53,12 @@ export class Engine {
   private timeAccum = 0;
   private areaMusic: 'crypt' | 'town' = 'crypt';
   private doorOpenByWall = new Map<number, boolean>();
+  private themeRegionId: string | null = null;   // atmosphere rebuild guard (streamed world)
+  private worldEntered = false;                  // camera drop only on first overworld entry
   composer: EffectComposer | null = null;
   bloomPass: UnrealBloomPass | null = null;
+  gtaoPass: GTAOPass | null = null;
+  gradePass: ShaderPass | null = null;
   readonly lowgfx: boolean;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -70,13 +87,24 @@ export class Engine {
       const renderPass = new RenderPass(this.scene, this.camera);
       this.bloomPass = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
-        0.75, // strength: vibrant, rich atmospheric bloom for fires, emissives, and magical effects
-        0.5,  // radius: soft blooming halo
-        0.82  // threshold: triggers on bright light sources, sparks, and spell bursts
+        0.30, // strength: restrained halo — fires and emissives glow without washing the frame
+        0.42, // radius: tight, soft blooming halo
+        0.85  // threshold: only true highlights (sky, flames, spells) bloom
       );
       this.composer = new EffectComposer(this.renderer);
       this.composer.addPass(renderPass);
+      // cheap raytraced occlusion: GTAO ray-marches the depth buffer for
+      // contact shadows — grounded, object-anchored shading at a modest cost
+      this.gtaoPass = new GTAOPass(this.scene, this.camera, window.innerWidth, window.innerHeight);
+      this.gtaoPass.output = GTAOPass.OUTPUT.Default;
+      this.composer.addPass(this.gtaoPass);
       this.composer.addPass(this.bloomPass);
+      // r152+ materials skip tone mapping + sRGB for render targets; OutputPass
+      // applies ACES + sRGB at the end of the chain (was silently missing)
+      this.composer.addPass(new OutputPass());
+      // display LUT grade (Elden Ring tone) + vignette, final pass
+      this.gradePass = createGradePass();
+      this.composer.addPass(this.gradePass);
     }
 
     this.world = new World(this);
@@ -152,6 +180,15 @@ export class Engine {
       console.warn('MAP_LOAD: map is null/missing');
       return;
     }
+    if (map.region) {
+      this.enterRegion(map);
+      return;
+    }
+    // dungeon / single-map path (P3.3: unchanged)
+    worldProbe.active = false;
+    worldProbe.regions.length = 0;
+    this.themeRegionId = null;
+    this.doorOpenByWall.clear();
     this.grid.build(map);
     this.fog.build(map);
     this.actors.clearAll();
@@ -164,6 +201,84 @@ export class Engine {
     const sp = map.spawns.party[0];
     this.camera.position.set(sp[0] * 5 + 10, 10.5, sp[1] * 5 + 16);
     this.camera.lookAt(sp[0] * 5, 4, sp[1] * 5);
+  }
+
+  /** P3.3 streamed world: add (or refocus) an overworld region. Regions build
+   *  additively at their world offsets; the focus region drives theme/music. */
+  private enterRegion(map: MapDef) {
+    const world = useGame.getState().world;
+    const isFocus = !world || (map.region!.rx === world.focus.rx && map.region!.rz === world.focus.rz);
+    const alreadyBuilt = this.grid.hasRegion(map.id);
+    this.grid.addRegion(map);
+    // fog of war is a dungeon-only feature now — the overworld renders fully
+    // revealed (no dark planes per region, monsters always visible outdoors)
+    this.syncWorldProbe();
+    if (isFocus) {
+      const def = this.grid.setFocusRegion(map.id);
+      this.controls.bindToken(this.myTokenId);
+      if (def && this.themeRegionId !== map.id) {
+        this.themeRegionId = map.id;
+        this.world.onMapTheme(def, map.worldOriginFt || { x: 0, z: 0 });
+        this.areaMusic = getAreaTileSet(def).ambience === 'town' ? 'town' : 'crypt';
+        const state = useGame.getState();
+        setMusicScene(state.initiative ? 'combat' : this.areaMusic);
+      }
+      if (!this.worldEntered) {
+        this.worldEntered = true;
+        // first overworld entry: drop the camera near the party spawn backdrop
+        const sp = map.spawns.party[0];
+        const origin = map.worldOriginFt || { x: 0, z: 0 };
+        this.camera.position.set(origin.x + sp[0] * 5 + 10, 12.5, origin.z + sp[1] * 5 + 16);
+        this.camera.lookAt(origin.x + sp[0] * 5, 4, origin.z + sp[1] * 5);
+      }
+    }
+    if (!alreadyBuilt && isFocus) {
+      // prune regions that fell outside the focus ring (def cache is the
+      // server's concern; the client only keeps what it renders)
+      this.pruneFarRegions(world);
+    }
+  }
+
+  private pruneFarRegions(world: GameStore['world']) {
+    if (!world) return;
+    const keep = new Set<string>();
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        keep.add(regionIdOf(world.focus.rx + dx, world.focus.rz + dz));
+      }
+    }
+    this.grid.retainRegions(keep);
+    this.fog.retainRegions(keep);
+    this.syncWorldProbe();
+  }
+
+  /** Rebuild the HUD-minimap snapshot after the streamed region set changes.
+   *  Water/road masks are rebuilt here (rare) so the HUD loop only reads. */
+  private syncWorldProbe() {
+    worldProbe.active = this.grid.worldMode && this.grid.regions.size > 0;
+    const regions = [];
+    for (const r of this.grid.regions.values()) {
+      const w = r.map.size.w, h = r.map.size.h;
+      const water = new Uint8Array(w * h);
+      for (const [x, z] of r.map.cells.water || []) {
+        if (x >= 0 && z >= 0 && x < w && z < h) water[z * w + x] = 1;
+      }
+      const road = new Uint8Array(w * h);
+      for (const [x, z] of r.map.cells.road || []) {
+        if (x >= 0 && z >= 0 && x < w && z < h) road[z * w + x] = 1;
+      }
+      regions.push({
+        id: r.id, rx: r.rx, rz: r.rz,
+        name: r.map.name || r.id,
+        w, h,
+        originX: r.origin.x, originZ: r.origin.z,
+        biome: r.map.biomes?.cells ?? null,
+        kinds: r.map.biomes?.kinds ?? [],
+        water, road,
+        explored: this.fog.exploredFor(r.id),
+      });
+    }
+    worldProbe.regions = regions;
   }
 
   start() {
@@ -190,6 +305,14 @@ export class Engine {
     }
 
     this.world.update(dt, this.lastEnv);
+    // HUD minimap feed: local token world position (feet) + facing
+    worldProbe.active = this.grid.worldMode && this.grid.regions.size > 0;
+    const myActor = this.myTokenId ? this.actors.get(this.myTokenId) : null;
+    if (myActor) {
+      worldProbe.player.x = myActor.group.position.x;
+      worldProbe.player.z = myActor.group.position.z;
+      worldProbe.player.rotY = myActor.group.rotation.y;
+    }
     this.grid.update(dt);
     this.controls.update(dt);
     this.actors.update(dt, this.timeAccum);
@@ -210,6 +333,7 @@ export class Engine {
     if (this.composer) {
       this.composer.setSize(window.innerWidth, window.innerHeight);
     }
+    this.gtaoPass?.setSize(window.innerWidth, window.innerHeight);
   };
 
   dispose() {
@@ -217,6 +341,8 @@ export class Engine {
     cancelAnimationFrame(this.raf);
     window.removeEventListener('resize', this.onResize);
     this.bloomPass?.dispose();
+    this.gtaoPass?.dispose();
+    this.gradePass?.dispose?.();
     this.composer?.dispose();
     this.renderer.dispose();
   }

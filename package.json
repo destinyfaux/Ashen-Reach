@@ -11,7 +11,7 @@
     "start": "node server/src/index.js",
     "dev": "npm run build && npm run start",
     "smoke": "node tools/smoke.mjs",
-    "test": "node --test \"server/src/rules/*.test.js\" server/src/GameManager.test.js"
+    "test": "node --test \"server/src/rules/*.test.js\" server/src/GameManager.test.js \"server/src/maps/*.test.mjs\""
   },
   "dependencies": {
     "three": "^0.169.0",

@@ -225,6 +225,51 @@ try {
     resumedToken.sheet.inventory.find(i => i.name === 'Potion of Healing')?.qty === 1);
   ws1b.close();
 
+  // ── P3.3 streamed world: region crossing + REST region fetch ────────
+  {
+    const syncWorld = sync1.state.world;
+    check('state:sync carries streamed world info',
+      !!syncWorld && syncWorld.focus.rx === 0 && syncWorld.focus.rz === 0 &&
+      syncWorld.regionW === 112 && syncWorld.regionH === 96, JSON.stringify(syncWorld));
+    const regionRes = await fetch(`${BASE}/api/map/w1_0`);
+    const region1 = await regionRes.json();
+    check('GET /api/map/w1_0 serves the streamed east region',
+      regionRes.status === 200 && region1.id === 'w1_0' && region1.region?.rx === 1 &&
+      Array.isArray(region1.cells.water) && region1.terrain?.heightFt?.length > 10000,
+      JSON.stringify({ id: region1.id, region: region1.region }));
+    // walk east until the token crosses into region (1,0) (world x = 560 ft)
+    const walker = sync1.state.tokens.find(token => token.ownerId === sync1.you.id);
+    const startX = walker.x;
+    let focusPatch = null;
+    let crossedX = startX;
+    for (let x = startX; x <= startX + 420 && !focusPatch; x += 45) {
+      await sleep(70);
+      send(ws1, 'intent:move', { x, z: walker.z, rotY: 0 });
+      const batch = await collect(ws1, 'state:patch', 140);
+      focusPatch = batch.find(p => p.world && p.world.focus && (p.world.focus.rx !== 0 || p.world.focus.rz !== 0));
+      crossedX = x;
+    }
+    check('walking east crosses the region border and shifts world focus',
+      !!focusPatch && focusPatch.world.focus.rx === 1 && focusPatch.mapId === 'w1_0',
+      JSON.stringify(focusPatch && { mapId: focusPatch.mapId, focus: focusPatch.world.focus }));
+    // walk back west: the focus must return to the home region and the token
+    // must settle near its start before the cemetery route below runs
+    const watchHome = collect(ws2, 'state:patch', 30000);  // ws2 observes; the mover is excluded from its own token echoes
+    for (let x = crossedX - 45; x >= startX - 12; x -= 45) {
+      await sleep(75);
+      send(ws1, 'intent:move', { x, z: walker.z, rotY: 0 });
+    }
+    const homePatches = await watchHome;
+    check('walking west restores the home region focus',
+      homePatches.some(p => p.world && p.world.focus && p.world.focus.rx === 0 && p.world.focus.rz === 0),
+      JSON.stringify(homePatches.find(p => p.world)?.world?.focus));
+    const homeToken = homePatches.filter(p => Array.isArray(p.tokens)).at(-1)?.tokens
+      ?.find(t => t.ownerId === sync1.you.id);
+    check('party walked home to the town area',
+      !!homeToken && Math.abs(homeToken.x - startX) <= 32,
+      JSON.stringify({ x: homeToken?.x, startX }));
+  }
+
   // ── town → cemetery crypt → overworld round trip ──────────────────────
   const cryptEntrance = sync1.map.exits?.find(exit => exit.destinationMapId === 'ashen_cellar');
   const startToken = sync1.state.tokens.find(token => token.ownerId === sync1.you.id);

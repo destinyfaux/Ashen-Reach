@@ -37,6 +37,49 @@ let closingIntentionally = false;
 let lastVersion = -1;            // state:patch de-dupe / ordering
 let currentMapId = '';           // detect map switches in patches
 
+// P3.3 streamed world: cached region defs fetched from /api/map/:id
+const regionCache = new Map<string, unknown>();
+const regionFetching = new Set<string>();
+const REGION_CACHE_MAX = 40;
+function regionIdOf(rx: number, rz: number): string {
+  if (rx === 0 && rz === 0) return 'ashen_reach';
+  const enc = (n: number) => (n < 0 ? 'm' + Math.abs(n) : String(n));
+  return `w${enc(rx)}_${enc(rz)}`;
+}
+
+/** Ensure the focus region + its 1-ring are fetched and emitted to the engine.
+ *  The focus def goes first so the engine can theme immediately. */
+function ensureWorldRegions() {
+  const w = useGame.getState().world;
+  if (!w) return;
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const rx = w.focus.rx + dx, rz = w.focus.rz + dz;
+      void fetchRegion(regionIdOf(rx, rz));
+    }
+  }
+}
+
+async function fetchRegion(id: string) {
+  if (regionCache.has(id) || regionFetching.has(id)) return;
+  regionFetching.add(id);
+  try {
+    const r = await fetch(`/api/map/${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const map = await r.json();
+    regionFetching.delete(id);
+    regionCache.set(id, map);
+    if (regionCache.size > REGION_CACHE_MAX) {
+      const oldest = regionCache.keys().next().value;
+      if (oldest !== undefined && oldest !== useGame.getState().world?.mapId) regionCache.delete(oldest);
+    }
+    Bus.emit(EV.MAP_LOAD, map);
+  } catch (e) {
+    regionFetching.delete(id);
+    console.error('[net] region fetch failed', id, e);
+  }
+}
+
 // latest bootstrap snapshot — replayed for the engine if it boots after the
 // first sync (engine constructs on phase 'playing', sync arrives on join)
 let lastMap: unknown = null;
@@ -137,6 +180,7 @@ function dispatch(ev: string, data: any) {
     case 'state:sync': {
       const st = data.state || {};
       lastVersion = typeof data.version === 'number' ? data.version : st.version ?? -1;
+      if (st.world) useGame.setState({ world: st.world });
       if (data.map) { lastMap = data.map; currentMapId = data.map.id || ''; }
       lastTokens = st.tokens || [];
       lastDoors = st.doors || [];
@@ -170,6 +214,7 @@ function dispatch(ev: string, data: any) {
       Bus.emit(EV.TOKENS_SYNC, st.tokens || []);
       Bus.emit(EV.ENV_SYNC, lastEnv);
       Bus.emit(EV.JOINED, data);
+      ensureWorldRegions();
       break;
     }
 
@@ -179,6 +224,7 @@ function dispatch(ev: string, data: any) {
         lastVersion = data.version;
       }
       const patch: StorePatch = {};
+      if (data.world !== undefined) useGame.setState({ world: data.world });
       if (data.players) patch.players = data.players;
       const mapId = data.mapId as string | undefined;
       const mapChanged = !!mapId && mapId !== currentMapId;
@@ -209,7 +255,15 @@ function dispatch(ev: string, data: any) {
           Bus.emit(EV.MAP_LOAD, data.map);
           Bus.emit(EV.DOORS_SYNC, lastDoors);
           Bus.emit(EV.TOKENS_SYNC, lastTokens || []);
-        } else void fetchMap(mapId!);
+        } else {
+          currentMapId = mapId!;
+          if (data.world && data.world.mapId === mapId) {
+            // streamed region focus shift: fetch focus + ring, no inline def
+            ensureWorldRegions();
+          } else {
+            void fetchMap(mapId!);
+          }
+        }
       }
       else if (data.doors) Bus.emit(EV.DOORS_SYNC, data.doors);
       break;
@@ -247,6 +301,7 @@ async function fetchMap(mapId: string) {
     const map = await r.json();
     currentMapId = map.id || mapId;
     lastMap = map;
+    if (map.region) regionCache.set(mapId, map);
     Bus.emit(EV.MAP_LOAD, map);
     Bus.emit(EV.DOORS_SYNC, lastDoors);
     Bus.emit(EV.TOKENS_SYNC, lastTokens || []);
@@ -263,6 +318,8 @@ export function replayBootstrap() {
   Bus.emit(EV.DOORS_SYNC, lastDoors);
   if (lastTokens) Bus.emit(EV.TOKENS_SYNC, lastTokens);
   if (lastEnv) Bus.emit(EV.ENV_SYNC, lastEnv);
+  // the engine missed the ring-region fetches that ran before it existed
+  ensureWorldRegions();
 }
 
 // ─── frozen intent API ─────────────────────────────────────────────────────
@@ -327,6 +384,8 @@ export function close(): void {
   lastVersion = -1;
   currentMapId = '';
   queue.length = 0;
+  regionCache.clear();
+  regionFetching.clear();
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   if (ws && wsOpen) {
     try { ws.send(JSON.stringify({ ev: 'session:leave', data: {} })); } catch { /* socket already dying */ }

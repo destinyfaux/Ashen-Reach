@@ -41,10 +41,18 @@ export interface MapDef {
   size: { w: number; h: number };
   theme: string; floor: string;
   tileSet?: string;
+  /** P3.3 streamed world: present on overworld region defs, absent on dungeon maps. */
+  region?: { rx: number; rz: number };
+  /** World-feet offset of this region's local (0,0); equals (rx*regionW*5, rz*regionH*5). */
+  worldOriginFt?: { x: number; z: number };
   cells: {
     wall: TileCell[];
     water?: TileCell[];
     waterSurfaceFt?: (number | null)[];
+    /** Cross-seam water ring, world-streamed regions only: [x, z, surfaceLevelFt]
+     *  for water cells up to 2 outside the region. Lets the renderer treat a
+     *  lake/river spanning two regions as one body (no seam trench or foam line). */
+    waterHalo?: [number, number, number][];
     road?: TileCell[];
     halfTiles?: HalfTileDef[];
   };
@@ -86,3 +94,4 @@ export type ActionFx = {
   anim: 'lunge' | 'spell' | 'shoot' | 'heal' | 'hit' | 'crit' | 'miss' | 'die' | 'buff';
   power?: number; dir?: number; ms?: number;
 };
+

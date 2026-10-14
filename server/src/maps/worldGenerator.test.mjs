@@ -38,7 +38,8 @@ test('overworld contains connected travel features, varied biomes, and a safe to
     assert.ok(centerGround < body.level,
       `terrain underneath ${body.kind} at ${cx},${cz} must be deformed below water level`);
   }
-  assert.ok(map.cells.water.every(([x, z]) => !isOverworldCellWalkable(map, x, z)));
+  assert.ok(map.cells.water.every(([x, z]) => isOverworldCellWalkable(map, x, z)),
+    'water is walkable by design (shallow fords)');
   for (const [x, z] of map.cells.water) {
     const ground = (
       map.terrain.heightFt[z * (map.size.w + 1) + x] +
@@ -154,15 +155,16 @@ test('overworld generates half-tile transitions for water and roads with correct
   assert.ok(waterHalfs.length > 0, 'water half-tiles exist for shorelines');
   assert.ok(roadHalfs.length > 0, 'road half-tiles exist for paths');
 
-  // Verify half-water tile precision collision: open half is walkable, water half is blocked
+  // Verify half-tile precision: with fords walkable, BOTH halves of a water
+  // half-tile are open — no invisible collision anywhere in the cell
   const firstWater = waterHalfs[0];
   const { x, z, orientation } = firstWater;
 
   // NW orientation: (x, z) to (x+1, z) to (x, z+1) is water; SE corner is open
   if (orientation === 'nw') {
     // Water point: (x + 0.2, z + 0.2) in cell coords -> world ft = * 5
-    assert.equal(isOverworldPointWalkable(map, (x + 0.2) * 5, (z + 0.2) * 5), false,
-      'water half of half-tile must be blocked');
+    assert.equal(isOverworldPointWalkable(map, (x + 0.2) * 5, (z + 0.2) * 5), true,
+      'water half of half-tile is walkable (shallow fords)');
     // Dry land point: (x + 0.8, z + 0.8)
     assert.equal(isOverworldPointWalkable(map, (x + 0.8) * 5, (z + 0.8) * 5), true,
       'dry land half of half-tile must be walkable (no invisible collision)');
