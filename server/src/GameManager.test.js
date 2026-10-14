@@ -181,7 +181,9 @@ test('short and long rest intents restore resources and are refused during comba
   assert.equal(token.hp, token.sheet.hp.current);
   assert.ok(token.hp > 1);
   assert.equal(token.sheet.hitDice.remaining, 1);
-  assert.equal(token.sheet.spellcasting.slots[1].used, 1);
+  // Arcane Recovery (SRD, wizard 1): the short rest restores the spent 1st-level slot
+  assert.equal(short.arcaneRecovery?.slots?.['1'], 1);
+  assert.equal(token.sheet.spellcasting.slots[1].used, 0);
 
   gm.state.initiative = { order: [token.id], turnIdx: 0, round: 1, movement: null };
   const denied = gm.onIntent(joined.you.id, 'intent:sheet', { op: 'longRest' });

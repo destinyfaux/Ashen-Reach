@@ -11,10 +11,16 @@
 //   xpForLevel(n) -> number             // XP threshold to REACH level n
 //   buildCombatProfile(sheet) -> slim profile for CombatEngine tokens
 //   getAbilityModifier(score), getProficiencyBonus(level)
+// Mechanics overlay: sheet.resources / sheet.actions / sheet.passives come from
+// mechanics_overlay.json via Mechanics.js (SRD stays immutable — see SCHEMA.md §5).
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  initResources, recoverResources, resourceMax, formulaContext,
+  passivesFor, fightingStyleOf
+} from './Mechanics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRD = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'srd_data.json'), 'utf-8'));
@@ -595,6 +601,39 @@ export function buildCharacter(def = {}) {
     });
   }
 
+  // Barbarian Unarmored Defense (SRD): 10 + DEX + CON when not wearing armor
+  if (className === 'Barbarian' && !armorEntry) {
+    ac = 10 + dexMod + conMod;
+    acDetail.base = 10;
+    acDetail.dex = dexMod;
+    acDetail.armor = null;
+    acDetail.notes.push('Barbarian Unarmored Defense (10 + DEX + CON)');
+  }
+
+  // Fighting Style (house default until the creation UI offers the choice):
+  // Defense +1 AC in armor | Archery +2 ranged to-hit | Dueling +2 melee damage.
+  // Great Weapon Fighting rerolls 1s-2s on damage inside CombatEngine.
+  const FIGHTING_STYLE_DEFAULTS = { Fighter: 'Defense', Paladin: 'Defense', Ranger: 'Archery' };
+  const fightingStyle = FIGHTING_STYLE_DEFAULTS[className] || null;
+  if (fightingStyle === 'Defense' && armorEntry) {
+    ac += 1;
+    acDetail.notes.push('Fighting Style (Defense) +1 AC');
+  }
+  if (fightingStyle === 'Archery') {
+    for (const atk of attacks) if (atk.ranged) atk.attackBonus += 2;
+  }
+  if (fightingStyle === 'Dueling') {
+    for (const atk of attacks) if (!atk.ranged && !atk.twoHanded) atk.damageMod += 2;
+  }
+
+  // Barbarian Fast Movement (SRD, level 5): +10 ft unless wearing heavy armor
+  let speedFt = Number(race.speed) || 30;
+  if (className === 'Barbarian' && level >= 5 &&
+      (!armorEntry || armorEntry.category !== 'heavy')) {
+    speedFt += 10;
+    acDetail.notes.push('Fast Movement +10 ft');
+  }
+
   // -- spellcasting
   let spellcasting = null;
   const sc = cls.spellcasting;
@@ -662,6 +701,9 @@ export function buildCharacter(def = {}) {
   // rogue sneak attack dice (CombatEngine applies when applicable)
   const sneakAttackDice = className === 'Rogue' ? `${Math.ceil(level / 2)}d6` : null;
 
+  // NOTE: `sheet` object is assembled below — mechanics overlay fields are
+  // attached right after (resources/passives/actions), before return.
+
   const sheet = {
     schema: SCHEMA_VERSION,
     id: def.id || ('sheet_' + slug(def.name || 'nameless') + '_' + Math.random().toString(36).slice(2, 7)),
@@ -687,7 +729,7 @@ export function buildCharacter(def = {}) {
       insight: 10 + (skills.insight?.mod ?? 0)
     },
     initiative: mods.dex,
-    speedFt: Number(race.speed) || 30,
+    speedFt,
     darkvisionFt: race.darkvision || null,
     languages: race.languages || ['Common'],
 
@@ -712,11 +754,17 @@ export function buildCharacter(def = {}) {
     features,
     traits,
 
+    fightingStyle,
+
     xp: xpForLevel(level),
     deathSaves: { ok: 0, fail: 0, stable: false, dead: false },
     conditions: [],
     concentration: null
   };
+
+  // Mechanics overlay: executable resources/actions/passives (idempotent).
+  // Un-compiled features stay text-only in `features` (the fallback path).
+  try { initResources(sheet); } catch { /* never block sheet creation */ }
   return sheet;
 }
 
@@ -766,6 +814,18 @@ export function toggleEquipment(sheet, itemName) {
     const shield = (SRD.equipment?.armor?.shields || []).find(s => s.name === 'Shield');
     acDetail.shield = shield?.ac_bonus ?? 2;
     ac += acDetail.shield;
+  }
+  // parity with buildCharacter: Barbarian Unarmored Defense + Defense fighting
+  // style must survive gear swaps, not just the initial sheet build
+  if (sheet.class === 'Barbarian' && !armor) {
+    ac = 10 + dexMod + (Number(sheet.mods?.con) || 0);
+    acDetail.base = 10;
+    acDetail.dex = dexMod;
+    acDetail.armor = null;
+  }
+  if (sheet.fightingStyle === 'Defense' && armor) {
+    ac += 1;
+    acDetail.notes = [...(acDetail.notes || []), 'Fighting Style (Defense) +1 AC'];
   }
   sheet.ac = ac;
   sheet.acDetail = acDetail;
@@ -843,6 +903,9 @@ export function levelUp(sheet, { hpRoll = null, rng = null } = {}) {
 
   if (sheet.class === 'Rogue') sheet.sneakAttackDice = `${Math.ceil(sheet.level / 2)}d6`;
 
+  // mechanics overlay: refresh pools/manifest so new features unlock at this level
+  try { initResources(sheet); } catch { /* keep leveling intact */ }
+
   for (const [ability, save] of Object.entries(sheet.saves || {})) {
     const key = normalizeAbilityKey(ability);
     save.mod = (Number(sheet.mods?.[key]) || 0) + (save.proficient ? sheet.proficiencyBonus : 0);
@@ -874,13 +937,22 @@ export function shortRest(sheet, diceToSpend = 0, rng = Math.random) {
   if (sheet.deathSaves?.dead) return { ok: false, reason: 'character_dead' };
   const count = Number(diceToSpend);
   const remaining = Math.max(0, Math.floor(Number(sheet.hitDice?.remaining) || 0));
-  if (!Number.isInteger(count) || count < 0 || count > remaining) {
+  if ((!Number.isInteger(count) || count < 0 || count > remaining)) {
     return { ok: false, reason: 'hit_dice_unavailable' };
   }
   const slots = sheet.spellcasting?.slots || {};
   const slotsSpent = Object.values(slots).reduce((sum, slot) => sum + Math.max(0, Number(slot?.used) || 0), 0);
   const restoresPactMagic = sheet.class === 'Warlock' && slotsSpent > 0;
-  if (count === 0 && !restoresPactMagic) return { ok: false, reason: 'nothing_to_recover' };
+  if (count === 0 && !restoresPactMagic) {
+    // even with no hit dice spent, a short rest still recovers short-rest pools
+    // (Second Wind, Action Surge, Channel Divinity...) and Arcane Recovery —
+    // proceed below; only refuse when there is literally nothing to recover
+    const mech = recoverResources(sheet, 'short_rest');
+    const arcane = applyArcaneRecovery(sheet);
+    if (!mech.length && !arcane && !restoresPactMagic) return { ok: false, reason: 'nothing_to_recover' };
+    return { ok: true, hitDiceSpent: 0, rolls: [], healing: 0, hpGained: 0,
+      slotsRecovered: 0, resourcesRecovered: mech, arcaneRecovery: arcane };
+  }
 
   const dieSize = Math.max(4, Math.min(12, Number(sheet.hp?.hitDie) || parseInt(sheet.hitDice?.die, 10) || 8));
   const conMod = Number(sheet.mods?.con) || 0;
@@ -907,11 +979,53 @@ export function shortRest(sheet, diceToSpend = 0, rng = Math.random) {
       slot.used = 0;
     }
   }
+  // mechanics overlay: short-rest pools (Second Wind, Action Surge, Channel
+  // Divinity) + Arcane Recovery (wizard, 1/long rest — see applyArcaneRecovery)
+  const resourcesRecovered = recoverResources(sheet, 'short_rest');
+  const arcaneRecovery = applyArcaneRecovery(sheet);
   return {
     ok: true, hitDiceSpent: count, rolls, healing,
     hpGained: Math.max(0, Number(sheet.hp?.current) || 0) - hpBefore,
     slotsRecovered,
+    resourcesRecovered,
+    arcaneRecovery,
   };
+}
+
+/**
+ * Arcane Recovery (wizard 1, SRD): after a short rest, recover spent spell
+ * slots whose combined level ≤ half the wizard's level (rounded up). Cheapest
+ * slots first. Consumes the arcane_recovery pool (1/long rest).
+ * @returns {null | {budget, slots: {level: count}}} null when unavailable
+ */
+function applyArcaneRecovery(sheet) {
+  if (!sheet || sheet.class !== 'Wizard') return null;
+  const pools = sheet.resources || {};
+  const pool = pools.arcane_recovery;
+  if (!pool || (Number(pool.cur) || 0) < 1) return null;
+  const slots = sheet.spellcasting?.slots;
+  if (!slots) return null;
+  const budget = Math.max(1, Math.ceil((Number(sheet.level) || 1) / 2));
+  // recover SPENT slots (used > 0), cheapest level first
+  const spentList = Object.entries(slots)
+    .map(([lvl, s]) => ({ level: Number(lvl), spent: Math.max(0, Number(s?.used) || 0) }))
+    .filter(e => e.spent > 0 && e.level >= 1)
+    .sort((a, b) => a.level - b.level);
+  if (!spentList.length) return null;
+  let left = budget;
+  const recovered = {};
+  for (const e of spentList) {
+    while (e.spent > 0 && left >= e.level) {
+      e.spent -= 1;
+      left -= e.level;
+      recovered[e.level] = (recovered[e.level] || 0) + 1;
+      slots[e.level].used = Math.max(0, (Number(slots[e.level].used) || 0) - 1);
+    }
+    if (left <= 0) break;
+  }
+  if (!Object.keys(recovered).length) return null;
+  pool.cur = Math.max(0, (Number(pool.cur) || 0) - 1);
+  return { budget: budget - left, slots: recovered };
 }
 
 export function longRest(sheet) {
@@ -932,11 +1046,16 @@ export function longRest(sheet) {
     slot.used = 0;
   }
   if (sheet.deathSaves) sheet.deathSaves = { ok: 0, fail: 0, stable: false, dead: false };
+  // mechanics overlay: long rest recovers ALL pools (short + long, RAW)
+  const resourcesRecovered = recoverResources(sheet, 'long_rest');
+  // refresh the mechanics manifest (new features unlock at this level)
+  try { initResources(sheet); } catch { /* keep the rest result intact */ }
   return {
     ok: true,
     hpGained: Math.max(0, hpMax - hpBefore),
     hitDiceRegained: hdRegained,
     slotsRecovered,
+    resourcesRecovered,
   };
 }
 
@@ -991,6 +1110,11 @@ export function buildCombatProfile(sheet) {
     sneakAttackDice: sheet.sneakAttackDice || null,
     passivePerception: sheet.passive?.perception ?? 10,
     deathSaves: { ...sheet.deathSaves },
-    sheetId: sheet.id
+    sheetId: sheet.id,
+    // mechanics overlay passthrough (features/spell coverage ride token.sheet)
+    fightingStyle: fightingStyleOf(sheet),
+    resources: sheet.resources || {},
+    actions: Array.isArray(sheet.actions) ? sheet.actions : [],
+    passives: passivesFor(sheet)
   };
 }

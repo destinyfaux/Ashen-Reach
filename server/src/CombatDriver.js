@@ -63,6 +63,28 @@ export function attachCombat(gm) {
   gm.__combat = true;
   gm.__combatEngine = CE;   // GameManager.__combatMove delegates through this
 
+  // ── opportunity attacks (SRD): after any voluntary in-combat move, each
+  // hostile that the mover LEFT the reach of gets one reaction attack.
+  // Both directions run through this hook (GameManager.move → onCombatMove;
+  // monster turns call it directly below). Auto-resolved — house automation.
+  gm.onCombatMove = (mover, from) => {
+    if (!CE.combatActive(gm.state)) return;
+    let oas = [];
+    try { oas = CE.opportunityAttacks(gm.state, mover, Number(from?.x), Number(from?.z)); } catch { return; }
+    for (const oa of oas) {
+      const attacker = gm.tokenById(oa.attackerId);
+      if (!attacker || attacker.reactionUsed) continue;
+      const req = { kind: 'attack', slot: 'reaction', opportunity: true, targetId: mover.id, weaponName: oa.weaponName };
+      let res = null;
+      try { res = CE.resolveAction(gm.state, attacker, req); } catch (e) { console.warn('[GM] OA failed', e.message); continue; }
+      if (res?.ok) attacker.reactionUsed = true;   // one reaction per round (RAW)
+      broadcastOutcome(attacker, req, res);
+      gm.commit({ tokens: gm.state.tokens, chat: gm.state.chat });
+      gm.checkUnassistedDowned();
+      if (checkCombatEnd()) return;
+    }
+  };
+
   // filesystem handles are injected by GameManager (avoids duplicate imports)
   const fs = gm.__fs;
   const path = gm.__path;
@@ -404,7 +426,9 @@ export function attachCombat(gm) {
     try { req = entry ? chooseAction(encounterState, t, entry) : null; } catch (e) { console.warn('[GM] ai failed', e.message); }
     if (!req) req = { kind: 'dodge', slot: 'action' };
     if (req.move && Number.isFinite(req.move.x) && Number.isFinite(req.move.z)) {
+      const prevX = t.x, prevZ = t.z;
       try { CE.attemptMove(gm.state, t, req.move.x, req.move.z); } catch { /* keep going */ }
+      try { gm.onCombatMove?.(t, { x: prevX, z: prevZ }); } catch { /* OA is best-effort */ }
     }
     let res = null;
     try { res = CE.resolveAction(gm.state, t, req); } catch (e) {
@@ -510,9 +534,15 @@ export function attachCombat(gm) {
           formula, rolls: result.rolls, total: result.hpGained, tag: 'short rest',
         });
       }
+      const resBits = Array.isArray(result.resourcesRecovered) && result.resourcesRecovered.length
+        ? `, recovered ${result.resourcesRecovered.map(id => String(id).replace(/_/g, ' ')).join(', ')}`
+        : '';
+      const arcaneBits = result.arcaneRecovery
+        ? ` · Arcane Recovery restores ${Object.entries(result.arcaneRecovery.slots).map(([lvl, n]) => `${n}×${lvl}th`).join(', ')} slots`
+        : '';
       const summary = op === 'shortRest'
-        ? `${actor.name} takes a short rest: ${result.hpGained} HP restored, ${result.hitDiceSpent} Hit Dice spent${result.slotsRecovered ? `, ${result.slotsRecovered} pact slot${result.slotsRecovered === 1 ? '' : 's'} recovered` : ''}.`
-        : `${actor.name} completes a long rest: ${result.hpGained} HP restored, ${result.hitDiceRegained} Hit Dice recovered, ${result.slotsRecovered} spell slot${result.slotsRecovered === 1 ? '' : 's'} restored.`;
+        ? `${actor.name} takes a short rest: ${result.hpGained} HP restored, ${result.hitDiceSpent} Hit Dice spent${result.slotsRecovered ? `, ${result.slotsRecovered} pact slot${result.slotsRecovered === 1 ? '' : 's'} recovered` : ''}${resBits}${arcaneBits}.`
+        : `${actor.name} completes a long rest: ${result.hpGained} HP restored, ${result.hitDiceRegained} Hit Dice recovered, ${result.slotsRecovered} spell slot${result.slotsRecovered === 1 ? '' : 's'} restored${resBits}.`;
       gm.narrate(summary);
       gm.commit({ tokens: gm.state.tokens, chat: gm.state.chat });
       return result;

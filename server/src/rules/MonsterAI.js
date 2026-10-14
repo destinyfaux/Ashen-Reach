@@ -211,6 +211,7 @@ export function buildMonsterToken(entry, overrides = {}) {
     ownerId: 'DM',
     name: entry.name || 'Creature',
     monsterId: entry.id || null,          // rules source (CONTRACTS token schema)
+    creatureType: String(entry.type || '').toLowerCase() || null,  // SRD type (undead/fiend… Turn Undead gate)
     archetype: ARCHETYPE_BY_TYPE[String(entry.type || '').toLowerCase()] || 'skeleton',
     x: 0, z: 0, rotY: 0,
     hp: entry.hp ?? 10,

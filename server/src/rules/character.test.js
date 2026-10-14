@@ -62,7 +62,7 @@ test('wizard: d6 hit die, level-1 slots, cantrips, save DC', () => {
   assert.equal(s.spellcasting.attackBonus, 5);
 });
 
-test('short rest spends Hit Dice for capped healing without restoring ordinary spell slots', () => {
+test('short rest spends Hit Dice for capped healing; Arcane Recovery restores one slot (1/long rest)', () => {
   const sheet = buildCharacter({ name: 'Ilyra', race: 'Human', class: 'Wizard', level: 2,
     abilities: { str: 8, dex: 14, con: 14, int: 16, wis: 12, cha: 10 } });
   sheet.hp.current = 2;
@@ -73,7 +73,10 @@ test('short rest spends Hit Dice for capped healing without restoring ordinary s
   assert.equal(result.hpGained, sheet.hp.max - 2);
   assert.equal(sheet.hitDice.remaining, 0);
   assert.equal(sheet.hp.hitDiceSpent, 2);
-  assert.equal(sheet.spellcasting.slots[1].used, 1);
+  // Arcane Recovery (SRD): wizard short rest recovers slot levels ≤ ceil(level/2) = 1
+  assert.ok(result.arcaneRecovery, 'arcane recovery applied');
+  assert.equal(sheet.spellcasting.slots[1].used, 0);
+  assert.equal(sheet.resources.arcane_recovery.cur, 0, 'pool spent (1/long rest)');
 });
 
 test('short rest restores Warlock pact slots; long rest restores HP, slots, and half spent Hit Dice', () => {
@@ -238,22 +241,22 @@ test('equipping inventory updates armor class, shield state, and weapon loadout'
     name: 'Vael', race: 'Human', class: 'Fighter', level: 1,
     abilities: { str: 14, dex: 14, con: 12, int: 10, wis: 10, cha: 10 },
   });
-  assert.equal(s.ac, 18);
+  assert.equal(s.ac, 19);   // chain mail 16 + shield 2 + Defense style 1
   assert.deepEqual(s.equipped, ['Longsword']);
 
   const shield = toggleEquipment(s, 'Shield');
   assert.equal(shield.ok, true);
   assert.equal(shield.equipped, false);
-  assert.equal(s.ac, 16);
+  assert.equal(s.ac, 17);   // chain mail 16 + Defense 1
   assert.equal(s.shield, false);
 
   const armor = toggleEquipment(s, 'Chain Mail');
   assert.equal(armor.ok, true);
   assert.equal(armor.equipped, false);
-  assert.equal(s.ac, 12);
+  assert.equal(s.ac, 12);   // unarmored 10 + DEX 2 (no Defense without armor)
   assert.equal(s.armor, null);
   assert.equal(toggleEquipment(s, 'Chain Mail').equipped, true);
-  assert.equal(s.ac, 16);
+  assert.equal(s.ac, 17);
 
   const weapon = toggleEquipment(s, 'Crossbow, Light');
   assert.equal(weapon.ok, true);

@@ -12,6 +12,10 @@
 // Extended with: full action economy (attack/multiattack/cast/dash/dodge/disengage/
 // help/ready/use), spell resolution with slot consumption + concentration, 5E
 // advantage/disadvantage matrix, resistances/immunities/vulnerabilities, sneak attack.
+// SRD mechanics overlay (Mechanics.js + mechanics_overlay.json): class features
+// execute deterministically (kind:'feature'), passive hooks ride attacks/saves/
+// damage (rage, fighting styles, Extra Attack, lucky, relentless endurance...),
+// and opportunity attacks close the Disengage loop. Un-compiled features stay text.
 //
 // STATE SHAPE (docs/CONTRACTS.md — GameManager owns it, we mutate it):
 //   state.tokens[]   — every creature; combat-relevant extras documented in SCHEMA.md
@@ -26,6 +30,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { d20, rollDiceFormula, rollDamage, parseDiceFormula } from './dice.js';
+import {
+  loadOverlay, formulaContext, evaluateFormula, passivesFor, fightingStyleOf,
+  extraAttacksFor, rageDamageBonus, actionEntry, activationOf, spendResource,
+  hasClassFeature
+} from './Mechanics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRD = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'srd_data.json'), 'utf-8'));
@@ -37,6 +46,13 @@ const TRAIL_MATCH_FT = 2.5;        // rewind match tolerance (same-cell in conti
 
 const tokenById = (state, id) => (state.tokens || []).find(t => t.id === id) || null;
 const has = (token, cond) => (token.conditions || []).includes(cond);
+
+/** Resource pools live on the character sheet (persisted); tokens may mirror. */
+function resourcesOf(token) {
+  if (token?.sheet?.resources && typeof token.sheet.resources === 'object') return token.sheet.resources;
+  if (token?.resources && typeof token.resources === 'object') return token.resources;
+  return null;
+}
 
 export function distFt(a, b) {
   const dx = Number(a.x) - Number(b.x);
@@ -287,16 +303,29 @@ function saveModFor(token, ability) {
 
 /**
  * A single saving throw. nat 20 auto-succeeds, nat 1 auto-fails (RAW).
+ * Mechanics-overlay hooks: advantage vs tagged conditions (Brave → frightened,
+ * Dwarven Resilience → poison, Fey Ancestry → charm, Danger Sense → dex),
+ * and Halfling Lucky rerolls natural 1s once.
  * @returns {{rolls, total, nat, success, dc, ability}}
  */
-export function rollSave(state, token, ability, { dc, adv = false, dis = false } = {}, rng = Math.random) {
+export function rollSave(state, token, ability, { dc, adv = false, dis = false, vs = null } = {}, rng = Math.random) {
   const mod = saveModFor(token, ability);
-  const r = d20(mod, { adv, dis }, rng);
+  const sources = [];
+  const p = token ? passivesFor(token) : null;
+  if (p && vs && p.saveAdvantage?.[vs]) { adv = true; sources.push(`advantage vs ${vs}`); }
+  if (p && !vs && String(ability || '').toLowerCase() === 'dex' && p.saveAdvantage?.dex) { adv = true; sources.push('danger sense'); }
+  let r = d20(mod, { adv, dis }, rng);
+  // Halfling Lucky (SRD): reroll a natural 1 on a saving throw once
+  if (p?.rerollNat1 && r.nat === 1 && (p.rerollNat1.kinds || []).includes('save')) {
+    const reroll = d20(mod, { adv, dis }, rng);
+    sources.push(`lucky reroll (${r.nat}→${reroll.nat})`);
+    r = { ...reroll, rolls: [...r.rolls, ...reroll.rolls] };   // dice tray shows both
+  }
   let success;
   if (r.nat === 20) success = true;
   else if (r.nat === 1) success = false;
   else success = r.total >= dc;
-  return { rolls: r.rolls, total: r.total, nat: r.nat, mod, success, dc, ability };
+  return { rolls: r.rolls, total: r.total, nat: r.nat, mod, success, dc, ability, sources };
 }
 
 /** Immediate concentration check from damage (5E: DC = max(10, half damage)). */
@@ -397,14 +426,37 @@ export function applyDamage(state, token, amount, { type = null, source = null, 
   let dmg = Math.max(0, Math.round(Number(amount) || 0));
   const notes = [];
 
+  // Charmed breaks when the charmer's allies harm it (SRD: removed on damage
+  // from a hostile source other than the charming effect's own healing etc.)
+  if (has(token, 'charmed') && dmg > 0 && source && source !== token.id) {
+    toggleCondition(token, 'charmed', false);
+    if (token.effects) delete token.effects.charmed;
+    notes.push(`${token.name} shakes off the charm as pain snaps through!`);
+  }
+
+  // Uncanny Dodge (rogue 5+, SRD): reaction — halve an attack's damage.
+  // Auto-used when the reaction is available (house automation default).
+  const passives = token ? passivesFor(token) : null;
+  if (passives?.uncannyDodge && dmg > 0 && source && source !== token.id &&
+      !token.reactionUsed && token.hp > 0 && type !== 'psychic') {
+    token.reactionUsed = true;
+    notes.push(`${token.name} slips aside — Uncanny Dodge halves the blow!`);
+    dmg = Math.floor(dmg / 2);
+  }
+
   if (type) {
     const t = String(type).toLowerCase();
     const immunities = token.immunities || [];
     const resistances = token.resistances || [];
     const vulnerabilities = token.vulnerabilities || [];
+    // Rage (barbarian, SRD): resistance to bludgeoning/piercing/slashing
+    const raging = has(token, 'raging') && ['bludgeoning', 'piercing', 'slashing'].includes(t);
     if (immunities.includes(t)) { if (dmg > 0) notes.push(`${token.name} is immune to ${t}.`); dmg = 0; }
+    else if (raging || resistances.includes(t) || (passives?.resistances || []).includes(t)) {
+      dmg = Math.floor(dmg / 2);
+      notes.push(raging ? `${token.name} rages through the ${t} blow — half damage!` : `${token.name} resists ${t}.`);
+    }
     else if (vulnerabilities.includes(t)) { dmg *= 2; notes.push(`${token.name} is vulnerable to ${t}!`); }
-    else if (resistances.includes(t)) { dmg = Math.floor(dmg / 2); notes.push(`${token.name} resists ${t}.`); }
   }
   if (dmg <= 0) {
     return { ok: true, hp: token.hp, downed: token.hp <= 0, dead: !!token.deathSaves?.dead, notes, amount: 0 };
@@ -424,16 +476,25 @@ export function applyDamage(state, token, amount, { type = null, source = null, 
     token.hp -= dmg;
     let dead = false, downed = false;
     if (token.hp <= 0) {
-      const leftover = -token.hp;
-      token.hp = 0;
-      downed = true;
-      // RAW instant death: damage REMAINING after dropping to 0 >= hpMax
-      if (leftover >= hpMax) {
-        dead = true;
-        notes.push(`Massive damage tears the life from ${token.name}!`);
+      // Relentless Endurance (half-orc, SRD): drop to 1 HP instead of 0, 1/long rest
+      const floorHook = passivesFor(token)?.damageFloor;
+      const pools = resourcesOf(token);
+      if (floorHook?.resource && Number(pools?.[floorHook.resource]?.cur) > 0) {
+        pools[floorHook.resource].cur -= 1;
+        token.hp = 1;
+        notes.push(`${token.name} endures the blow with 1 HP (Relentless Endurance)!`);
+      } else {
+        const leftover = -token.hp;
+        token.hp = 0;
+        downed = true;
+        // RAW instant death: damage REMAINING after dropping to 0 >= hpMax
+        if (leftover >= hpMax) {
+          dead = true;
+          notes.push(`Massive damage tears the life from ${token.name}!`);
+        }
       }
     }
-    if (downed && !dead) {
+    if (token.hp <= 0 && downed && !dead) {
       if (token.deathSaves == null) {
         dead = true;                                    // monsters die at 0 (automation default)
       } else {
@@ -442,6 +503,12 @@ export function applyDamage(state, token, amount, { type = null, source = null, 
         toggleCondition(token, 'prone', true);
         notes.push(`${token.name} is down!`);
       }
+    }
+    // Rage ends early (SRD) if the barbarian drops unconscious
+    if (token.hp <= 0 && has(token, 'raging')) {
+      toggleCondition(token, 'raging', false);
+      if (token.effects) delete token.effects.raging;
+      notes.push(`${token.name}'s rage fizzles out.`);
     }
     if (dead) markDead(token);
     return { ok: true, hp: token.hp, downed, dead, notes, amount: dmg };
@@ -518,6 +585,9 @@ export function attackAdvantage(state, attacker, target, weapon, request = {}) {
   if (has(attacker, 'blinded') || target.hidden || has(target, 'invisible')) dis.push('unseen target');
   if (has(attacker, 'frightened')) dis.push('attacker frightened');
   if (has(target, 'guided')) adv.push('guided by magic');   // Guiding Bolt payoff
+  // Reckless Attack (barbarian, SRD): advantage on melee; attackers get it too
+  if (has(attacker, 'reckless') && melee) adv.push('reckless attack');
+  if (has(target, 'reckless') && melee) adv.push('target reckless');
 
   // Help action / pack-tactics flanking (house rule, AI-supplied hint)
   const helped = (state.tokens || []).some(t =>
@@ -542,10 +612,13 @@ export function attackAdvantage(state, attacker, target, weapon, request = {}) {
   return { adv: adv.length > 0, dis: dis.length > 0, sources: [...adv, ...dis] };
 }
 
-// ── spell mechanics (curated SRD subset; see SCHEMA.md) ──────────────────────
+// ── spell mechanics (mechanics overlay 'spells' section; see SCHEMA.md) ──────
+// Compiled from SRD prose into mechanics_overlay.json (deterministic data) —
+// the inline table below is the hard fallback so the engine never breaks if the
+// overlay file is missing. Overlay entries with the same name win.
 
-// mode: attack | save | auto | heal | buff | sleep | shield | utility
-const SPELL_MECHANICS = {
+// mode: attack | save | auto | heal | buff | sleep | shield | utility | hex | charm
+const SPELL_MECHANICS_FALLBACK = {
   'Fire Bolt': { mode: 'attack', dice: '1d10', type: 'fire', cantripScale: true },
   'Ray of Frost': { mode: 'attack', dice: '1d8', type: 'cold', cantripScale: true },
   'Eldritch Blast': { mode: 'attack', dice: '1d10', type: 'force', cantripScale: 'beams' },
@@ -571,6 +644,7 @@ const SPELL_MECHANICS = {
   'Hold Person': { mode: 'save', save: 'wis', effect: 'paralyzed', effectRounds: 10, concentration: true, perSlotTarget: 1 },
   'Spiritual Weapon': { mode: 'attack', dice: '1d8', mod: true, type: 'force', concentration: true, perSlotDice: 1, bonus: true }
 };
+const SPELL_MECHANICS = { ...SPELL_MECHANICS_FALLBACK, ...(loadOverlay().spells || {}) };
 
 function diceStringWithCount(dice, extraDice) {
   const m = /^(\d+)d(\d+)$/.exec(String(dice));
@@ -627,11 +701,19 @@ export function resolveAction(state, actor, request, rng = Math.random) {
   }
 
   const active = combatActive(state);
+
+  // ── class features (mechanics overlay) — activation comes from the overlay ──
+  if (request.kind === 'feature') {
+    return resolveFeatureRequest(state, token, request, rng, { active });
+  }
+
   if (active && request.slot !== 'reaction') {
     if (currentActorId(state) !== token.id) return { ok: false, reason: 'not_your_turn' };
     const isBonus = request.slot === 'bonus';
+    // Action Surge (overlay): a surging actor may take one extra action
+    const surged = !isBonus && token.surging === true;
     if (isBonus && token.bonusUsed) return { ok: false, reason: 'bonus_used' };
-    if (!isBonus && token.actionUsed) return { ok: false, reason: 'action_used' };
+    if (!isBonus && token.actionUsed && !surged) return { ok: false, reason: 'action_used' };
   }
 
   let outcome;
@@ -653,9 +735,219 @@ export function resolveAction(state, actor, request, rng = Math.random) {
   // consume economy (only for full actions / bonus actions in combat)
   if (active && request.slot !== 'reaction') {
     if (request.slot === 'bonus') token.bonusUsed = true;
+    else if (token.surging === true) token.surging = false;   // surge covers one action
     else token.actionUsed = true;
   }
   return { ok: true, result: outcome };
+}
+
+// ── class features (mechanics overlay executor) ──────────────────────────────
+
+/**
+ * Resolve {kind:'feature', featureId} against the mechanics overlay.
+ * Economy is gated by the overlay activation ('action'/'bonus' consume economy,
+ * 'free'/'reaction' do not). Costs (resource pools) are paid before effects.
+ */
+function resolveFeatureRequest(state, token, request, rng, { active }) {
+  const sheet = token.sheet || token;
+  const found = actionEntry(token, request.featureId);
+  if (!found) {
+    // not compiled → text-only fallback signal (client shows the SRD description)
+    return { ok: false, reason: 'feature_not_compiled', detail: request.featureId };
+  }
+  const { entry } = found;
+  const activation = entry.activation || 'action';
+
+  if (active && activation !== 'reaction' && activation !== 'free') {
+    if (currentActorId(state) !== token.id) return { ok: false, reason: 'not_your_turn' };
+    if (activation === 'bonus' && token.bonusUsed) return { ok: false, reason: 'bonus_used' };
+    if (activation === 'action' && token.actionUsed && token.surging !== true) return { ok: false, reason: 'action_used' };
+  }
+
+  // pay resource cost (explicit cost block OR feature-bound resource pool)
+  const pools = resourcesOf(token);
+  let spentResource = null;
+  if (entry.cost?.resourceId && pools) {
+    const ctx = { ...formulaContext(sheet), resource: Number(pools[entry.cost.resourceId]?.cur) || 0 };
+    const amount = Math.max(1, Math.floor(evaluateFormula(entry.cost.amount, ctx) ?? 1));
+    const spend = spendResource(token, entry.cost.resourceId, amount);
+    if (!spend.ok) return { ok: false, reason: spend.reason === 'no_resource' ? 'feature_not_compiled' : spend.reason };
+    spentResource = { id: entry.cost.resourceId, amount };
+  } else if (entry.resource && pools) {
+    const spend = spendResource(token, entry.resource, 1);
+    if (!spend.ok) return { ok: false, reason: spend.reason === 'resource_spent' ? 'resource_spent' : 'feature_not_compiled' };
+    spentResource = { id: entry.resource, amount: 1 };
+  }
+
+  const outcome = doFeature(state, token, entry, request, rng);
+  if (outcome.ok === false) {
+    // refund on refused effects (target missing etc.)
+    if (spentResource && pools?.[spentResource.id]) {
+      pools[spentResource.id].cur = Math.min((pools[spentResource.id].max ?? 99), (pools[spentResource.id].cur || 0) + spentResource.amount);
+    }
+    return outcome;
+  }
+
+  // consume economy
+  if (active && (activation === 'action' || activation === 'bonus')) {
+    if (activation === 'bonus') token.bonusUsed = true;
+    else if (token.surging === true) token.surging = false;
+    else token.actionUsed = true;
+  }
+  if (spentResource) outcome.result.resource = { id: spentResource.id, remaining: pools?.[spentResource.id]?.cur ?? 0 };
+  return { ok: true, result: outcome.result };
+}
+
+/** Effect pipeline for overlay features (kinds documented in mechanics_overlay.json). */
+function doFeature(state, actor, entry, request, rng) {
+  const chat = [];
+  const fx = { actorId: actor.id, anim: 'buff' };
+  const result = { kind: 'feature', featureId: entry.id || request.featureId, name: entry.name, chat, fx };
+  const effects = Array.isArray(entry.effects) ? entry.effects : [];
+
+  for (const effect of effects) {
+    switch (effect.kind) {
+      case 'heal': {
+        const dest = tokenById(state, request.targetId) || actor;   // self by default
+        if (dest.deathSaves?.dead) return { ok: false, reason: 'target_dead' };
+        const ctx = formulaContext(actor.sheet || actor);
+        const mod = evaluateFormula(effect.mod, ctx) ?? 0;
+        const roll = rollDamage(effect.dice || '1d4', { bonusMod: mod, rng });
+        const applied = applyHealing(state, dest, roll.total);
+        chat.push(`${actor.name} uses ${entry.name} — ${dest.name} regains ${applied.gained} HP. (${dest.hp}/${dest.hpMax} HP)`);
+        result.healing = { total: roll.total, gained: applied.gained, rolls: roll.rolls, formula: `${effect.dice}${mod >= 0 ? '+' : ''}${mod}` };
+        result.targetId = dest.id;
+        fx.targetId = dest.id; fx.anim = 'heal'; fx.power = applied.gained;
+        break;
+      }
+      case 'condition': {
+        const dest = effect.target === 'self' ? actor : (tokenById(state, request.targetId) || actor);
+        addEffect(dest, effect.condition, Math.max(1, Math.floor(Number(effect.rounds) || 1)));
+        chat.push(`${actor.name} uses ${entry.name}: ${dest.name} gains ${effect.condition.replace(/_/g, ' ')}.`);
+        result.condition = { targetId: dest.id, condition: effect.condition, rounds: effect.rounds };
+        fx.targetId = dest.id;
+        break;
+      }
+      case 'extra_action': {
+        actor.surging = true;
+        chat.push(`${actor.name} presses the attack — ${entry.name} grants one additional action!`);
+        result.extraAction = true;
+        break;
+      }
+      case 'dash': {
+        const out = doDash(state, actor, request);
+        if (!out.ok) return { ok: false, reason: out.reason };
+        chat.push(...(out.chat || []));
+        result.dash = true;
+        break;
+      }
+      case 'disengage': {
+        const out = doDisengage(state, actor, request);
+        chat.push(...(out.chat || []));
+        result.disengage = true;
+        break;
+      }
+      case 'hide': {
+        actor.hidden = true;
+        toggleCondition(actor, 'hidden', true);
+        chat.push(`${actor.name} melts into the shadows (hidden).`);
+        result.hidden = true;
+        break;
+      }
+      case 'turn_undead': {
+        const sc = actor.spellcasting || actor.sheet?.spellcasting;
+        const dc = Number(sc?.saveDC) || 8 + (Number(formulaContext(actor.sheet || actor).profBonus) || 2)
+          + (Number(formulaContext(actor.sheet || actor).wisMod) || 0);
+        const radius = Number(effect.radiusFt) || 30;
+        const victims = (state.tokens || []).filter(t =>
+          t.id !== actor.id && t.hp > 0 && !t.deathSaves?.dead &&
+          String(t.creatureType || t.monsterType || '').toLowerCase() === 'undead' &&
+          distFt(t, actor) <= radius + 0.01);
+        const outcomes = [];
+        if (!victims.length) chat.push(`${actor.name} raises the holy symbol — no undead stir within ${radius} ft.`);
+        for (const v of victims) {
+          const save = rollSave(state, v, effect.save || 'wis', { dc, vs: 'frightened' }, rng);
+          if (!save.success) {
+            addEffect(v, effect.condition || 'frightened', Math.max(1, Math.floor(Number(effect.rounds) || 10)));
+            chat.push(`${v.name} cowers before ${actor.name}'s holy symbol! (save ${save.total} vs DC ${dc})`);
+          } else {
+            chat.push(`${v.name} withstands the divine presence. (save ${save.total} vs DC ${dc})`);
+          }
+          outcomes.push({ targetId: v.id, save: { nat: save.nat, total: save.total, success: save.success } });
+        }
+        result.turnUndead = { dc, outcomes };
+        fx.anim = 'spell';
+        break;
+      }
+      case 'create_slot': {
+        const sc = actor.spellcasting || actor.sheet?.spellcasting;
+        const level = Math.max(2, Math.min(5, Math.floor(Number(effect.level) || 2)));
+        if (!sc?.slots) return { ok: false, reason: 'no_spellcasting' };
+        sc.slots[level] = sc.slots[level] || { total: 0, used: 0 };
+        sc.slots[level].total += 1;
+        chat.push(`${actor.name} weaves sorcery into a ${ordinal(level)}-level spell slot.`);
+        result.createdSlot = level;
+        fx.anim = 'spell';
+        break;
+      }
+      case 'slot_to_points': {
+        const pools = resourcesOf(actor);
+        const sc = actor.spellcasting || actor.sheet?.spellcasting;
+        if (!pools?.sorcery_points || !sc?.slots) return { ok: false, reason: 'no_spellcasting' };
+        // burn the highest available slot (RAW: gain points equal to its level)
+        const levels = Object.keys(sc.slots).map(Number).sort((a, b) => b - a);
+        const hitLevel = levels.find(l => (sc.slots[l]?.used ?? 0) < (sc.slots[l]?.total ?? 0));
+        if (!hitLevel) return { ok: false, reason: 'no_slot' };
+        sc.slots[hitLevel].used += 1;
+        pools.sorcery_points.cur = Math.min(pools.sorcery_points.max ?? 99, (Number(pools.sorcery_points.cur) || 0) + hitLevel);
+        chat.push(`${actor.name} burns a ${ordinal(hitLevel)}-level slot for ${hitLevel} sorcery points.`);
+        result.slotBurned = hitLevel;
+        fx.anim = 'spell';
+        break;
+      }
+      default:
+        break;   // unknown effect kind — inert (never throws)
+    }
+  }
+  return { ok: true, result };
+}
+
+const ordinal = (n) => ({ 1: '1st', 2: '2nd', 3: '3rd', 4: '4th', 5: '5th', 6: '6th', 7: '7th', 8: '8th', 9: '9th' })[Number(n)] || `${n}th`;
+
+// ── opportunity attacks (SRD: leaving a hostile's reach provokes) ────────────
+
+/** First available melee attack entry of a token (for OAs). */
+function meleeAttackEntry(token) {
+  const attacks = token?.attacks || token?.combat?.attacks || token?.sheet?.attacks || [];
+  return attacks.find(a => !a.ranged) || null;
+}
+
+/**
+ * Creatures that get an opportunity attack against `mover` for the move
+ * segment `from → (mover.x, mover.z)`. Pure scan — the caller resolves each
+ * (resolveAction, slot 'reaction'). RAW: leaving a hostile's reach without
+ * Disengaging provokes; forced movement never provokes (we only scan voluntary
+ * moves through attemptMove).
+ */
+export function opportunityAttacks(state, mover, fromX, fromZ) {
+  if (!mover || mover.hp <= 0 || mover.deathSaves?.dead) return [];
+  if (has(mover, 'disengaged')) return [];               // Disengage suppresses OAs
+  if (has(mover, 'prone')) { /* crawling still provokes */ }
+  const out = [];
+  for (const watcher of state.tokens || []) {
+    if (watcher.id === mover.id || watcher.hp <= 0 || watcher.deathSaves?.dead) continue;
+    if (!isHostile(watcher, mover)) continue;            // only hostiles threaten
+    if (has(watcher, 'incapacitated') || has(watcher, 'paralyzed') ||
+        has(watcher, 'stunned') || has(watcher, 'unconscious')) continue;
+    if (watcher.reactionUsed) continue;                  // one reaction per round
+    const entry = meleeAttackEntry(watcher);
+    if (!entry) continue;                                // needs a melee attack
+    const reach = Number(entry.reachFt || 5);
+    const d0 = Math.hypot(Number(watcher.x) - Number(fromX), Number(watcher.z) - Number(fromZ));
+    const d1 = Math.hypot(Number(watcher.x) - Number(mover.x), Number(watcher.z) - Number(mover.z));
+    if (d0 <= reach + 0.01 && d1 > reach + 0.01) out.push({ attackerId: watcher.id, weaponName: entry.name, reachFt: reach });
+  }
+  return out;
 }
 
 // —— attack ——
@@ -674,6 +966,31 @@ function findAttackEntry(token, request) {
   return attacks[0];
 }
 
+/**
+ * Great Weapon Fighting (SRD): reroll damage dice that show 1–2, once each.
+ * Hand-rolls the dice portion (flat mods applied once); ignores kh/kl (weapon
+ * damage formulas never use them).
+ */
+function gwfDamage(formula, { crit, rng }) {
+  const parsed = parseDiceFormula(formula);
+  if (!parsed) return rollDamage(formula, { crit, rng });
+  let total = 0;
+  const rolls = [];
+  for (const term of parsed) {
+    if (term.flat !== undefined) { total += term.sign * term.flat; continue; }
+    const times = crit ? 2 : 1;
+    for (let t = 0; t < times; t++) {
+      for (let i = 0; i < term.count; i++) {
+        let face = 1 + Math.floor(rng() * term.sides);
+        if (face <= 2) { rolls.push(face); face = 1 + Math.floor(rng() * term.sides); }
+        rolls.push(face);
+        total += term.sign * face;
+      }
+    }
+  }
+  return { total: Math.max(0, total), rolls, formula: String(formula).trim(), crit };
+}
+
 function doAttack(state, actor, request, rng) {
   const target = tokenById(state, request.targetId);
   if (!target) return { ok: false, reason: 'no_target' };
@@ -681,8 +998,19 @@ function doAttack(state, actor, request, rng) {
   if (target.hp <= 0 && target.deathSaves != null) return { ok: false, reason: 'target_down' };
 
   // multiattack: request.attacks = [names] (MonsterAI), else single weapon
-  const names = Array.isArray(request.attacks) && request.attacks.length
+  let names = Array.isArray(request.attacks) && request.attacks.length
     ? request.attacks : [request.weaponName || request.attackName || null];
+  // Extra Attack (SRD, fighters/barbarians/paladins/rangers/monks at 5+):
+  // the Attack action grants additional attacks with the same weapon.
+  if (!(Array.isArray(request.attacks) && request.attacks.length)) {
+    const extra = extraAttacksFor(actor);
+    for (let i = 0; i < extra; i++) names.push(names[0]);
+  }
+
+  const actorPassives = passivesFor(actor);
+  const style = fightingStyleOf(actor);
+  const raging = has(actor, 'raging');
+  const rageMod = raging ? rageDamageBonus(actor.level ?? actor.sheet?.level ?? 1) : 0;
 
   const results = [];
   const chat = [];
@@ -691,6 +1019,7 @@ function doAttack(state, actor, request, rng) {
     if (!entry) return { ok: false, reason: 'no_weapon' };
 
     // normalize attack shape (CharacterEngine profile vs monsters_index entry)
+    const abilityUsed = entry.ability || (entry.ranged || entry.rangeFt ? 'dex' : 'str');
     const weapon = {
       name: entry.name,
       toHit: Number(entry.toHit ?? entry.attackBonus ?? 0),
@@ -700,19 +1029,28 @@ function doAttack(state, actor, request, rng) {
       reachFt: Number(entry.reachFt || 5),
       rangeFt: entry.rangeFt ?? null,
       longRangeFt: entry.longRangeFt ?? entry.longRange ?? null,
-      finesse: !!entry.finesse
+      finesse: !!entry.finesse,
+      twoHanded: !!entry.twoHanded,
+      versatile: !!entry.versatile
     };
 
-    // range gate
+    // range gate (opportunity attacks resolve at the leave-reach boundary —
+    // the target is treated as still within reach during the passing step)
     const d = distFt(actor, target);
     const maxReach = weapon.ranged ? (weapon.longRangeFt || weapon.rangeFt || 20) : weapon.reachFt;
-    if (d > maxReach + 0.01) {
+    if (!request.opportunity && d > maxReach + 0.01) {
       return { ok: false, reason: 'out_of_range', detail: { distanceFt: Math.round(d), maxReachFt: maxReach } };
     }
 
     // advantage / disadvantage
     const { adv, dis, sources } = attackAdvantage(state, actor, target, weapon, request);
-    const roll = d20(weapon.toHit, { adv, dis }, rng);
+    let roll = d20(weapon.toHit, { adv, dis }, rng);
+    // Halfling Lucky (SRD): reroll a natural 1 on an attack roll once
+    if (actorPassives?.rerollNat1 && roll.nat === 1 && (actorPassives.rerollNat1.kinds || []).includes('attack')) {
+      const reroll = d20(weapon.toHit, { adv, dis }, rng);
+      sources.push(`lucky reroll (${roll.nat}→${reroll.nat})`);
+      roll = { ...reroll, rolls: [...roll.rolls, ...reroll.rolls] };   // dice tray shows both
+    }
 
     // bless / bane d4s (raw 5E)
     let bonus = 0;
@@ -739,8 +1077,16 @@ function doAttack(state, actor, request, rng) {
     }
 
     // damage (crit doubles dice; resistances; sneak attack when eligible)
-    const dmgRoll = rollDamage(weapon.dmg, { crit: isCrit, rng });
+    const critTimes = isCrit && actorPassives?.critExtraDice && !weapon.ranged
+      ? 2 + actorPassives.critExtraDice   // Savage Attacks (half-orc): +1 damage die on melee crits
+      : 1;
+    const useGWF = style === 'Great Weapon Fighting' && (weapon.twoHanded || weapon.versatile);
+    const dmgRoll = useGWF
+      ? gwfDamage(weapon.dmg, { crit: isCrit, rng })
+      : rollDamage(weapon.dmg, { crit: isCrit, times: critTimes, rng });
     let dmg = dmgRoll.total;
+    // Rage (SRD): +2/+3/+4 melee damage with STR weapons
+    if (rageMod && !weapon.ranged && abilityUsed === 'str') dmg += rageMod;
     let sneakRoll = null;
     const allyAdjacent = (state.tokens || []).some(t =>
       t.id !== actor.id && !isHostile(t, actor) && t.hp > 0 && distFt(t, target) <= CELL_FT + 0.01);
@@ -748,16 +1094,29 @@ function doAttack(state, actor, request, rng) {
       sneakRoll = rollDamage(actor.sneakAttackDice, { crit: isCrit, rng });
       dmg += sneakRoll.total;
     }
+    // Hex (SRD): the hexed target takes an extra 1d6 necrotic from the hexer's hits
+    let hexRoll = null;
+    if (has(target, 'hexed') && target.hexCasterId === actor.id) {
+      hexRoll = rollDamage('1d6', { crit: isCrit, rng });
+      dmg += hexRoll.total;
+    }
 
     const applied = applyDamage(state, target, dmg, { type: weapon.dmgType, source: actor.id, crit: isCrit, rng });
     const fxAnim = weapon.ranged ? 'shoot' : 'lunge';
-    shot.damage = { total: applied.amount ?? dmg, rolls: dmgRoll.rolls, formula: weapon.dmg, type: weapon.dmgType, sneak: sneakRoll ? sneakRoll.total : null, crit: isCrit };
+    shot.damage = {
+      total: applied.amount ?? dmg, rolls: dmgRoll.rolls, formula: weapon.dmg, type: weapon.dmgType,
+      sneak: sneakRoll ? sneakRoll.total : null,
+      hex: hexRoll ? hexRoll.total : null,
+      rage: rageMod && !weapon.ranged && abilityUsed === 'str' ? rageMod : null,
+      crit: isCrit
+    };
     shot.targetHp = target.hp;
     shot.fx = { actorId: actor.id, targetId: target.id, anim: fxAnim, power: applied.amount ?? dmg, ms: 320 };
     chat.push(
       isCrit
         ? `CRITICAL! ${actor.name} lands ${weapon.name} on ${target.name} for ${applied.amount} ${weapon.dmgType} damage! (${target.hp}/${target.hpMax} HP)`
         : `${actor.name} hits ${target.name} with ${weapon.name} for ${applied.amount} ${weapon.dmgType} damage. (${target.hp}/${target.hpMax} HP)`);
+    if (hexRoll) chat.push(`Hex festers — an extra ${hexRoll.total} necrotic!`);
     (applied.notes || []).forEach(n => chat.push(n));
     results.push(shot);
   }
@@ -773,6 +1132,9 @@ function doAttack(state, actor, request, rng) {
 // —— cast ——
 
 function doCast(state, actor, request, rng) {
+  // Rage (SRD): barbarians cannot cast spells while raging — checked before
+  // the spellcasting lookup so a raging non-caster still gets the true reason
+  if (has(actor, 'raging')) return { ok: false, reason: 'raging_cannot_cast' };
   const sc = actor.spellcasting || actor.combat?.spellcasting || actor.sheet?.spellcasting;
   if (!sc) return { ok: false, reason: 'no_spellcasting' };
 
@@ -792,6 +1154,10 @@ function doCast(state, actor, request, rng) {
     const bucket = slots[slotLevel];
     if (!bucket || bucket.used >= bucket.total) return { ok: false, reason: 'no_slot', detail: { slotLevel } };
   }
+
+  // reaction-spells (Shield, SRD: reaction on being hit) bypass the turn gate
+  const spellActivation = mech?.activation || 'action';
+  const isReactionSpell = spellActivation === 'reaction';
 
   // resolve
   const out = resolveSpellEffect(state, actor, request, spell, mech, { slotLevel, spellLevel, casterLevel, sc }, rng);
@@ -814,6 +1180,13 @@ function doCast(state, actor, request, rng) {
   out.result.kind = 'cast';
   out.result.spellId = spellName;
   out.result.actorId = actor.id;
+  // consume the action economy — reaction-casts never consume an action
+  if (combatActive(state) && !isReactionSpell) {
+    if (request.slot === 'bonus') actor.bonusUsed = true;
+    else if (actor.surging === true) actor.surging = false;
+    else actor.actionUsed = true;
+  }
+  out.result.reactionCast = isReactionSpell;
   // FIX (T2-b2): resolveSpellEffect already returns {ok, result}; returning it
   // as-is made resolveAction double-wrap casts into {ok, result:{ok, result}},
   // breaking the {ok, result} contract every other action follows. Flatten one
@@ -946,7 +1319,13 @@ function resolveSpellEffect(state, actor, request, spell, mech, ctx, rng) {
     case 'heal': {
       const dest = target || actor;    // self-cast allowed
       if (dest.deathSaves?.dead) return { ok: false, reason: 'target_dead' };
-      const mod = mech.mod ? (Number(sc.abilityMod) || 0) : 0;
+      let mod = mech.mod ? (Number(sc.abilityMod) || 0) : 0;
+      // Disciple of Life (Life Domain, SRD): +2 + spell level cast HP
+      if (passivesFor(actor)?.discipleOfLife) {
+        const bonus = 2 + slotLevel;
+        mod += bonus;
+        chat.push(`Disciple of Life bolsters the healing (+${bonus} HP).`);
+      }
       const r = rollDamage(dice, { bonusMod: mod, rng });
       const applied = applyHealing(state, dest, r.total);
       chat.push(`${actor.name} casts ${spellName} on ${dest.name} — ${applied.gained} HP restored. (${dest.hp}/${dest.hpMax} HP)`);
@@ -999,6 +1378,30 @@ function resolveSpellEffect(state, actor, request, spell, mech, ctx, rng) {
       }
       if (!slept.length) chat.push(`${actor.name}'s ${spellName} washes harmlessly over the field.`);
       return { ok: true, result: { chat, slept, pool: pool.total, fx: { actorId: actor.id, targetId: origin.id, anim: 'spell' } } };
+    }
+
+    case 'hex': {
+      // Hex (SRD): no save — the target takes an extra 1d6 necrotic from the
+      // caster's weapon hits, duration 1 hour / concentration (10-round v1 cap)
+      if (!target) return { ok: false, reason: 'no_target' };
+      addEffect(target, mech.condition || 'hexed', Math.max(1, Math.floor(Number(mech.effectRounds) || 10)));
+      target.hexCasterId = actor.id;
+      chat.push(`${actor.name} lays a Hex upon ${target.name} — ${actor.name}'s strikes bite deeper.`);
+      return { ok: true, result: { chat, hexed: target.id, fx: { actorId: actor.id, targetId: target.id, anim: 'spell', ms: 520 }, rolls: [] } };
+    }
+
+    case 'charm': {
+      // Charm Person (SRD): WIS save or charmed (breaks on damage — applyDamage)
+      if (!target) return { ok: false, reason: 'no_target' };
+      const save = rollSave(state, target, mech.save || 'wis', { dc: saveDC, vs: 'charm' }, rng);
+      if (!save.success) {
+        addEffect(target, mech.condition || 'charmed', Math.max(1, Math.floor(Number(mech.effectRounds) || 10)));
+        target.charmerId = actor.id;
+        chat.push(`${target.name} regards ${actor.name} as a trusted friend. (save ${save.total} vs DC ${saveDC})`);
+      } else {
+        chat.push(`${target.name}'s mind resists ${spellName}. (save ${save.total} vs DC ${saveDC})`);
+      }
+      return { ok: true, result: { chat, outcomes: [{ targetId: target.id, save: { nat: save.nat, total: save.total, success: save.success }, condition: save.success ? null : (mech.condition || 'charmed') }], saveDC, fx: { actorId: actor.id, targetId: target.id, anim: 'spell' }, rolls: [save] } };
     }
 
     case 'shield': {

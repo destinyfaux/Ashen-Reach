@@ -977,8 +977,15 @@ export class GameManager {
 
     // in combat: route through the 5E movement budget (trail + refund)
     if (this.state.initiative) {
+      const prevX = token.x, prevZ = token.z;
       const r = this.__combatMove(token, x, z);
       if (!r.ok) return reject(r.reason || 'no_movement');
+      // Opportunity attacks (SRD): leaving a hostile's reach provokes — the
+      // CombatDriver hook resolves each as a reaction attack (fx + rolls + chat).
+      if (typeof this.onCombatMove === 'function') {
+        try { this.onCombatMove(token, { x: prevX, z: prevZ }); }
+        catch (e) { console.warn('[GM] combat move hook failed', e.message); }
+      }
     } else {
       token.x = x;
       token.z = z;

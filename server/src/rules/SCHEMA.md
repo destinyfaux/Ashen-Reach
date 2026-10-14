@@ -383,3 +383,80 @@ Poll once per turn end — beats are deduped per state (idempotent).
 Heuristics v1: reinforcement wave (1–2 CR-appropriate spawns, party still
 standing, all monsters dead before round 2) → retreat narration (first living
 monster < 30% HP) → weather shift every 3 rounds, dimming light every 6.
+
+---
+
+## 5. Mechanics overlay — `Mechanics.js` + `server/src/data/mechanics_overlay.json`
+
+The SRD (`srd_data.json`) stays an immutable content database. Executable rules live
+in a **separate mechanics overlay**: formulas, costs, triggers and effects compiled
+once from SRD prose into deterministic JSON, run by `Mechanics.js` + `CombatEngine.js`
+(no LLM, no `eval`). Any feature WITHOUT an overlay entry remains display text on the
+sheet — the runtime falls back to showing the SRD description (DeepSeek-pattern:
+SRD → display, overlay → mechanics, engine → executes overlay when present).
+
+### Shape
+
+```json
+{
+  "version": "ashenreach.mechanics/1",
+  "resources": { "<id>": { "label", "max": "<expr>", "recovery": "short_rest|long_rest" } },
+  "features":  { "<Class>/<Feature>": {
+      "id", "name", "activation": "action|bonus|free|reaction|passive",
+      "minLevel", "resource?", "sourceFeature?",       // sourceFeature: one SRD feature → many actions
+      "cost?: { resourceId, amount: <expr> }",
+      "effects": [ { "kind": "heal|condition|extra_action|dash|disengage|hide|turn_undead|create_slot|slot_to_pointS", ... } ]
+  } },
+  "passives": { "<Class>/<Feature>": { "extraAttacks|uncannyDodge|discipleOfLife|saveAdvantage|style", "minLevel" } },
+  "racial":   { "<Race>/<Trait>": { "hook": "reroll_nat1|save_advantage|resistance|damage_floor|crit_extra_dice", ... } },
+  "spells":   { "<Name>": { "mode": "attack|save|auto|heal|buff|sleep|shield|hex|charm", "activation?", dice/save/type/... } }
+}
+```
+
+Formulas are plain expressions over `{level, classLevel, profBonus, strMod..chaMod,
+resource, slotLevel}` — a tiny recursive-descent evaluator (numbers, `+ - * /`,
+comparisons, ternary, `min/max/floor/ceil/abs`), never throws (malformed → null).
+
+### Sheet integration (built by `buildCharacter`, idempotent via `initResources`)
+
+| Field | Shape | Notes |
+|---|---|---|
+| `sheet.resources` | `{<id>: {cur, max, recovery, label}}` | pools from features + racial hooks |
+| `sheet.actions` | `[{id, name, activation, resource, summary}]` | HUD feature buttons; `passive` excluded |
+| `sheet.passives` | `{rerollNat1, saveAdvantage, resistances, damageFloor, critExtraDice, uncannyDodge, extraAttacks, discipleOfLife, fightingStyle}` | hook bundle consulted by CombatEngine |
+| `sheet.fightingStyle` | `string\|null` | house default (Fighter/Paladin → Defense, Ranger → Archery) until the creation UI offers the choice |
+
+### Compiled in v1 (playable classes + wizard races)
+
+- **Fighter**: Second Wind (bonus, 1d10+level, 1/short rest), Action Surge (extra
+  action, 1/short rest), Fighting Style (Defense default; Archery/Dueling/GWF
+  mechanical), Extra Attack (lvl 5)
+- **Barbarian**: Rage (+2/3/4 STR melee dmg, B/P/S resistance, no casting, 10
+  rounds, 2–6/long rest), Reckless Attack (adv both ways), Unarmored Defense
+  (10+DEX+CON), Fast Movement (+10 ft, no heavy armor), Danger Sense (DEX saves adv)
+- **Rogue**: Cunning Action (bonus Dash/Disengage/Hide), Uncanny Dodge (reaction,
+  halve, auto when reaction free), Sneak Attack (pre-existing)
+- **Cleric**: Channel Divinity: Turn Undead (action, 30 ft, WIS save or frightened;
+  gated on `token.creatureType === 'undead'`), Disciple of Life (heal spells +2+slot level)
+- **Wizard**: Arcane Recovery (auto on short rest, slot levels ≤ ceil(level/2),
+  cheapest first, 1/long rest)
+- **Sorcerer**: Font of Magic (points = level), Flexible Casting (create 2nd-level
+  slot for 2 points; burn highest slot for its level)
+- **Races**: Halfling Lucky/Brave, Half-Orc Relentless Endurance/Savage Attacks,
+  Dwarven Resilience (poison adv + resistance), Elf Fey Ancestry, Tiefling Hellish
+  Resistance (fire)
+- **Spells**: Shield (reaction, +5 AC), Hex (+1d6 necrotic rider on the hexer's
+  hits, breaks… concentration), Charm Person (WIS save → charmed; breaks on damage)
+  join the 24 previously-compiled spells (table now lives in the overlay, inline
+  fallback preserved)
+
+### Rests & reactions
+
+- `shortRest(sheet, dice?)` → also recovers `short_rest` pools + Arcane Recovery;
+  `longRest(sheet)` → recovers ALL pools (RAW) + `initResources` refresh (new
+  features unlock at the new level).
+- **Opportunity attacks**: `CombatEngine.opportunityAttacks(state, mover, fromX,
+  fromZ)` scans each voluntary in-combat move segment; CombatDriver resolves each
+  as a `slot:'reaction'` attack with `opportunity: true` (range gate relaxed — the
+  strike lands at the leave-reach boundary). Disengage/used reaction suppress.
+  Auto-resolved for both sides (house automation; DM can house-rule later).
