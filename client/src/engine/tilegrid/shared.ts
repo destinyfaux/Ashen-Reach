@@ -12,6 +12,42 @@ export interface Collider {
   x1: number; z1: number; x2: number; z2: number;
   yMin: number; yMax: number;
   decor?: boolean;
+  rotY?: number;
+  cx?: number;
+  cz?: number;
+}
+
+/** Pushes an exact oriented bounding collider rotated around root (x, z) */
+export function addRotatedCollider(
+  colliders: Collider[],
+  rootX: number,
+  rootZ: number,
+  localX: number,
+  localZ: number,
+  halfW: number,
+  halfD: number,
+  yMin: number,
+  yMax: number,
+  rotY = 0,
+  decor = false
+) {
+  const cos = Math.cos(rotY);
+  const sin = Math.sin(rotY);
+  const worldX = rootX + localX * cos - localZ * sin;
+  const worldZ = rootZ + localX * sin + localZ * cos;
+
+  colliders.push({
+    x1: worldX - halfW,
+    x2: worldX + halfW,
+    z1: worldZ - halfD,
+    z2: worldZ + halfD,
+    cx: worldX,
+    cz: worldZ,
+    rotY,
+    yMin,
+    yMax,
+    decor
+  });
 }
 
 /** P3.3 streamed world: one built overworld region placed at its world offset. */

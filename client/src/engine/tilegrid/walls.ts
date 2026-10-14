@@ -43,6 +43,10 @@ export function buildWalls(grid: TileGrid, map: MapDef, wallSet: Set<number>) {
     const s = getTextureSet(wallSetDef.kind, v);
     s.map.repeat.set(1, 1.6);
     s.bump.repeat.set(1, 1.6);
+    s.normal.repeat.set(1, 1.6);
+    s.roughnessMap.repeat.set(1, 1.6);
+    s.aoMap.repeat.set(1, 1.6);
+    if (s.heightMap) s.heightMap.repeat.set(1, 1.6);
   }
 
   const dummy = new THREE.Object3D();

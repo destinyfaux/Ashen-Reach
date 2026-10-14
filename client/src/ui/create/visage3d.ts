@@ -7,8 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import * as THREE from 'three';
 import { HumanoidRig } from '../../engine/rig/HumanoidRig';
-import { buildEquipment } from '../../engine/rig/equipment';
-import { Animator, WeaponStyle } from '../../engine/rig/animations';
+import { Animator } from '../../engine/rig/animations';
 import type { TokenLook } from '../../engine/types';
 import type { CreateState } from './steps';
 import {
@@ -27,14 +26,13 @@ const CLASS_TO_ARCHETYPE: Record<string, string> = {
   cleric: 'pale_priest', druid: 'pale_priest', bard: 'pale_priest',
 };
 
-const CLASS_TO_STYLE: Record<string, WeaponStyle> = {
-  fighter: 'sword', paladin: 'sword', barbarian: 'sword',
-  rogue: 'dagger', ranger: 'dagger', monk: 'dagger',
-  wizard: 'staff', sorcerer: 'staff', warlock: 'staff', artificer: 'staff',
-  cleric: 'mace', druid: 'mace', bard: 'mace',
-};
-
 export class Visage3DView {
+  static savedYaw = 0.08;
+  static savedPitch = 0.04;
+  static savedDistance = 9.2;
+  static savedTargetY = 2.85;
+  static savedAutoRotate = false;
+
   readonly root: HTMLElement;
   private canvas: HTMLCanvasElement;
   private renderer: THREE.WebGLRenderer | null = null;
@@ -47,12 +45,12 @@ export class Visage3DView {
   private lastTime = 0;
   private elapsed = 0;
 
-  // camera orbit state
-  private yaw = 0.12;           // radians around Y
-  private pitch = 0.08;         // radians elevation
-  private distance = 3.6;       // ft from target
-  private targetY = 1.6;        // look-at target height
-  private autoRotate = true;
+  // camera orbit state — restored from previous edits so the viewport does not reset
+  private yaw = Visage3DView.savedYaw;
+  private pitch = Visage3DView.savedPitch;
+  private distance = Visage3DView.savedDistance;
+  private targetY = Visage3DView.savedTargetY;
+  private autoRotate = Visage3DView.savedAutoRotate;
   private isDragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
@@ -87,34 +85,40 @@ export class Visage3DView {
     autoBtn.onclick = (e) => {
       e.stopPropagation();
       this.autoRotate = !this.autoRotate;
+      Visage3DView.savedAutoRotate = this.autoRotate;
       autoBtn.classList.toggle('active', this.autoRotate);
     };
 
     const resetBtn = document.createElement('button');
     resetBtn.className = 'cr-3d-btn';
     resetBtn.type = 'button';
-    resetBtn.title = 'Reset camera';
+    resetBtn.title = 'Reset to full body view';
     resetBtn.textContent = 'Front';
     resetBtn.onclick = (e) => {
       e.stopPropagation();
-      this.yaw = 0.12;
-      this.pitch = 0.08;
-      this.distance = 3.6;
-      this.targetY = 1.6;
+      const rScale = this.rig?.raceScale || 1.0;
+      this.yaw = 0.08;
+      this.pitch = 0.04;
+      this.distance = 9.2;
+      this.targetY = 2.85 * rScale;
+      this.saveCamera();
+      this.updateCamera();
     };
 
     const focusBtn = document.createElement('button');
     focusBtn.className = 'cr-3d-btn';
     focusBtn.type = 'button';
-    focusBtn.title = 'Close-up of visage';
+    focusBtn.title = 'Close-up of visage and head';
     focusBtn.textContent = 'Face';
     focusBtn.onclick = (e) => {
       e.stopPropagation();
       this.yaw = 0.05;
-      this.pitch = 0.04;
-      const headY = this.rig ? this.rig.topY * 0.88 : 2.7;
+      this.pitch = 0.02;
+      const headY = this.rig ? this.rig.topY * 0.88 : 5.1;
       this.targetY = headY;
-      this.distance = 2.1;
+      this.distance = 3.2;
+      this.saveCamera();
+      this.updateCamera();
     };
 
     bar.append(hint, focusBtn, resetBtn, autoBtn);
@@ -123,7 +127,7 @@ export class Visage3DView {
 
     // Three.js scene setup
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(32, width / height, 0.2, 30);
+    this.camera = new THREE.PerspectiveCamera(38, width / height, 0.2, 40);
     this.updateCamera();
 
     try {
@@ -222,7 +226,8 @@ export class Visage3DView {
       this.lastPointerY = e.clientY;
 
       this.yaw -= dx * 0.012;
-      this.pitch = Math.max(-0.35, Math.min(0.65, this.pitch + dy * 0.008));
+      this.pitch = Math.max(-0.45, Math.min(0.75, this.pitch + dy * 0.008));
+      this.saveCamera();
       this.updateCamera();
     });
 
@@ -237,10 +242,19 @@ export class Visage3DView {
 
     el.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const delta = e.deltaY * 0.003;
-      this.distance = Math.max(1.6, Math.min(5.5, this.distance + delta));
+      const delta = e.deltaY * 0.006;
+      this.distance = Math.max(2.2, Math.min(16.0, this.distance + delta));
+      this.saveCamera();
       this.updateCamera();
     }, { passive: false });
+  }
+
+  private saveCamera() {
+    Visage3DView.savedYaw = this.yaw;
+    Visage3DView.savedPitch = this.pitch;
+    Visage3DView.savedDistance = this.distance;
+    Visage3DView.savedTargetY = this.targetY;
+    Visage3DView.savedAutoRotate = this.autoRotate;
   }
 
   private updateCamera() {
@@ -301,14 +315,8 @@ export class Visage3DView {
 
     try {
       this.rig = new HumanoidRig(archetype, tokenLook);
-      buildEquipment(this.rig, charClass);
+      // Character creation leaves hands unencumbered — no permanent sword/shield attached
       this.scene.add(this.rig.body);
-
-      // Adjust camera target slightly based on race scale
-      const rScale = this.rig.raceScale || 1.0;
-      if (this.targetY < 2.0) {
-        this.targetY = 1.6 * rScale;
-      }
       this.updateCamera();
     } catch (e) {
       console.error('[Visage3D] rig build failed:', e);
@@ -336,16 +344,14 @@ export class Visage3DView {
     }
 
     if (this.rig) {
-      const charClass = (this.state.charClass || 'Fighter').toLowerCase();
-      const style = CLASS_TO_STYLE[charClass] || 'sword';
-
+      // Natural idle pose with bare hands in character forge
       this.animator.update({
         dt,
         t: this.elapsed,
         speed: 0,
         accel: 0,
         yawRate: 0,
-        style,
+        style: 'none',
         isWraith: false,
         isSkeleton: false,
       }, this.rig);

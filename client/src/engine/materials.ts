@@ -851,6 +851,387 @@ function buildBark(variant = 0): TextureSet {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (i) ruin stone masonry — monumental megalithic ashlar blocks, carved relief,
+//     deep mortar channels, chipped stone corners, chisel marks, moss & lichen.
+//     v0: ancient weathered ruin stone (grey-bone, deep crevices)
+//     v1: overgrown damp mossy stone (moss creeping in joints, algae wash)
+//     v2: dark crypt / dungeon masonry (soot-stained, salt efflorescence)
+// ─────────────────────────────────────────────────────────────────────────────
+function buildRuinMasonry(variant = 0): TextureSet {
+  const S = 512;
+  const cm = mkCanvas(S), cb = mkCanvas(S);
+  const g = cm.g, b = cb.g;
+  const r = rng(0x9a3e + variant * 71);
+
+  const isMossy = variant === 1;
+  const isCrypt = variant === 2;
+
+  // Base rock tones
+  const baseRgb = isCrypt
+    ? [48, 46, 44]     // charcoal soot crypt
+    : isMossy
+      ? [68, 70, 60]   // greenish damp stone
+      : [86, 82, 75];  // weathered ancient ashlar
+  g.fillStyle = `rgb(${baseRgb.join(',')})`;
+  g.fillRect(0, 0, S, S);
+  b.fillStyle = 'rgb(20, 20, 20)'; // deep recessed mortar
+  b.fillRect(0, 0, S, S);
+
+  // 4 grand stone courses (rows of ashlar blocks)
+  const numRows = 4;
+  const rowH = S / numRows;
+
+  // Generate blocks per row with varying widths for massive stonework
+  for (let row = 0; row < numRows; row++) {
+    const y0 = row * rowH;
+    const numCols = row % 2 === 0 ? 3 : 2;
+    const colW = S / numCols;
+    const xOffset = (row % 2 === 0 ? 0 : colW * 0.5);
+
+    for (let c = -1; c <= numCols + 1; c++) {
+      const gx = ((c % numCols) + numCols) % numCols;
+      const br = rngFrom(hash2(gx, row, 0x8821 + variant * 19));
+
+      const bx0 = c * colW + xOffset + 4;
+      const bw = colW - 8;
+      const bh = rowH - 8;
+      const by0 = y0 + 4;
+
+      const tone = 0.82 + br() * 0.36;
+      const warm = (br() - 0.5) * 0.12;
+      const blockColor = [
+        Math.min(255, Math.round(baseRgb[0] * tone * (1 + warm))),
+        Math.min(255, Math.round(baseRgb[1] * tone)),
+        Math.min(255, Math.round(baseRgb[2] * tone * (1 - warm * 0.6)))
+      ];
+
+      // Draw raised block face on albedo
+      g.fillStyle = `rgb(${blockColor[0]}, ${blockColor[1]}, ${blockColor[2]})`;
+      g.fillRect(bx0, by0, bw, bh);
+
+      // Pillow bevels on bump map: mortar is dark, stone face pillows up smoothly
+      const bumpHeight = Math.round(180 + tone * 60);
+      const grad = b.createRadialGradient(
+        bx0 + bw * 0.5, by0 + bh * 0.5, Math.min(bw, bh) * 0.15,
+        bx0 + bw * 0.5, by0 + bh * 0.5, Math.min(bw, bh) * 0.65
+      );
+      grad.addColorStop(0, `rgb(${bumpHeight}, ${bumpHeight}, ${bumpHeight})`);
+      grad.addColorStop(0.75, `rgb(${Math.round(bumpHeight * 0.85)}, ${Math.round(bumpHeight * 0.85)}, ${Math.round(bumpHeight * 0.85)})`);
+      grad.addColorStop(1, 'rgb(30, 30, 30)');
+      b.fillStyle = grad;
+      b.fillRect(bx0, by0, bw, bh);
+
+      // Stone block highlight (top edge catch-light) & shadow (bottom edge)
+      g.fillStyle = 'rgba(255, 245, 220, 0.14)';
+      g.fillRect(bx0, by0, bw, 3);
+      g.fillStyle = 'rgba(0, 0, 0, 0.35)';
+      g.fillRect(bx0, by0 + bh - 4, bw, 4);
+
+      b.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      b.fillRect(bx0, by0, bw, 3);
+      b.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      b.fillRect(bx0, by0 + bh - 4, bw, 4);
+
+      // Hand-hewn chisel grooves across each block
+      for (let ch = 0; ch < 6; ch++) {
+        const cx = bx0 + br() * bw;
+        const cy = by0 + br() * bh;
+        const clen = 8 + br() * 24;
+        const ang = (br() - 0.5) * 0.5;
+        g.strokeStyle = 'rgba(10, 8, 6, 0.28)';
+        g.lineWidth = 1 + br() * 1.5;
+        g.beginPath();
+        g.moveTo(cx, cy);
+        g.lineTo(cx + Math.cos(ang) * clen, cy + Math.sin(ang) * clen);
+        g.stroke();
+
+        b.strokeStyle = 'rgba(25, 25, 25, 0.6)';
+        b.lineWidth = 1 + br() * 1.5;
+        b.beginPath();
+        b.moveTo(cx, cy);
+        b.lineTo(cx + Math.cos(ang) * clen, cy + Math.sin(ang) * clen);
+        b.stroke();
+      }
+
+      // Chipped stone corners on weathered ruins
+      if (br() < 0.6) {
+        const cornerX = br() < 0.5 ? bx0 : bx0 + bw;
+        const cornerY = br() < 0.5 ? by0 : by0 + bh;
+        const cSize = 6 + br() * 14;
+        g.fillStyle = 'rgba(12, 10, 8, 0.45)';
+        g.beginPath();
+        g.moveTo(cornerX, cornerY);
+        g.lineTo(cornerX + (cornerX === bx0 ? cSize : -cSize), cornerY);
+        g.lineTo(cornerX, cornerY + (cornerY === by0 ? cSize : -cSize));
+        g.closePath();
+        g.fill();
+
+        b.fillStyle = 'rgb(35, 35, 35)';
+        b.beginPath();
+        b.moveTo(cornerX, cornerY);
+        b.lineTo(cornerX + (cornerX === bx0 ? cSize : -cSize), cornerY);
+        b.lineTo(cornerX, cornerY + (cornerY === by0 ? cSize : -cSize));
+        b.closePath();
+        b.fill();
+      }
+
+      // Weather fracture / fissure running across stone block
+      if (br() < 0.45) {
+        let fx = bx0 + br() * bw;
+        let fy = by0;
+        g.strokeStyle = 'rgba(15, 12, 8, 0.55)';
+        g.lineWidth = 1.2 + br() * 0.8;
+        b.strokeStyle = 'rgb(25, 25, 25)';
+        b.lineWidth = 1.4 + br();
+        g.beginPath(); b.beginPath();
+        g.moveTo(fx, fy); b.moveTo(fx, fy);
+        for (let seg = 0; seg < 4; seg++) {
+          fx += (br() - 0.5) * 16;
+          fy += bh / 4;
+          g.lineTo(fx, fy);
+          b.lineTo(fx, fy);
+        }
+        g.stroke();
+        b.stroke();
+      }
+    }
+  }
+
+  // Vertical rainwater & soot runoff streaks
+  for (let i = 0; i < 35; i++) {
+    const sx = r() * S;
+    const sy = r() * S * 0.3;
+    const slen = 40 + r() * 180;
+    const sw = 2 + r() * 5;
+    const streakAlpha = isCrypt ? 0.16 : 0.09;
+    wrap9(g, S, sx, sy, (ctx) => {
+      ctx.fillStyle = isCrypt ? `rgba(8, 7, 6, ${streakAlpha})` : `rgba(28, 24, 18, ${streakAlpha})`;
+      ctx.fillRect(-sw * 0.5, 0, sw, slen);
+    });
+  }
+
+  // Lichen & moss growth in crevices
+  const mossCount = isMossy ? 80 : 30;
+  for (let m = 0; m < mossCount; m++) {
+    const mx = r() * S;
+    const my = r() * S;
+    const mr = 4 + r() * 18;
+    const isLichenRosette = !isMossy && r() < 0.55;
+    const mossCol = isLichenRosette
+      ? `rgba(168, 176, 142, ${0.35 + r() * 0.3})`
+      : `rgba(45, 75, 35, ${0.45 + r() * 0.35})`;
+    wrap9(g, S, mx, my, (ctx) => {
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, mr);
+      grad.addColorStop(0, mossCol);
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, mr, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    wrap9(b, S, mx, my, (ctx) => {
+      ctx.fillStyle = 'rgba(70, 70, 70, 0.4)';
+      ctx.beginPath();
+      ctx.arc(0, 0, mr * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // General stone grain speckle
+  for (let sp = 0; sp < 1200; sp++) {
+    const x = r() * S, y = r() * S;
+    g.fillStyle = r() < 0.5 ? 'rgba(0, 0, 0, 0.12)' : 'rgba(230, 220, 200, 0.08)';
+    g.fillRect(x, y, 1 + r() * 2, 1 + r() * 2);
+  }
+
+  const pbr = derivePBRMaps(cb.c, 3.8);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (j) half-timbered medieval plaster — coarse roughcast lime plaster with
+//     heavy dark weathered oak framing beams and iron pegs.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildTimberPlaster(variant = 0): TextureSet {
+  const S = 512;
+  const cm = mkCanvas(S), cb = mkCanvas(S);
+  const g = cm.g, b = cb.g;
+  const r = rng(0x712a + variant * 37);
+
+  // Warm off-white / bone plaster base
+  g.fillStyle = '#b8b0a2';
+  g.fillRect(0, 0, S, S);
+  b.fillStyle = 'rgb(120, 120, 120)';
+  b.fillRect(0, 0, S, S);
+
+  // Plaster trowel texture and sand grain
+  for (let i = 0; i < 900; i++) {
+    const x = r() * S, y = r() * S;
+    g.fillStyle = r() < 0.5 ? 'rgba(40, 36, 30, 0.08)' : 'rgba(255, 250, 240, 0.12)';
+    g.fillRect(x, y, 1 + r() * 3, 1 + r() * 3);
+  }
+
+  // Weathered timber framing beams
+  const beamW = 28;
+  const oakColor = [62, 46, 32];
+
+  function drawBeam(x0: number, y0: number, x1: number, y1: number, w: number) {
+    g.save(); b.save();
+    g.strokeStyle = `rgb(${oakColor[0]}, ${oakColor[1]}, ${oakColor[2]})`;
+    g.lineWidth = w;
+    g.lineCap = 'square';
+    g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+
+    // Wood stands proud on bump map
+    b.strokeStyle = 'rgb(195, 195, 195)';
+    b.lineWidth = w;
+    b.lineCap = 'square';
+    b.beginPath(); b.moveTo(x0, y0); b.lineTo(x1, y1); b.stroke();
+
+    // Woodgrain lines
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const angle = Math.atan2(y1 - y0, x1 - x0);
+    g.translate(x0, y0);
+    g.rotate(angle);
+    for (let l = 0; l < 8; l++) {
+      g.strokeStyle = 'rgba(20, 14, 8, 0.35)';
+      g.lineWidth = 1 + r() * 1.5;
+      const offY = (r() - 0.5) * (w - 4);
+      g.beginPath();
+      g.moveTo(0, offY);
+      g.lineTo(len, offY + (r() - 0.5) * 4);
+      g.stroke();
+    }
+    g.restore(); b.restore();
+  }
+
+  // Sill and top plate
+  drawBeam(0, beamW * 0.5, S, beamW * 0.5, beamW);
+  drawBeam(0, S - beamW * 0.5, S, S - beamW * 0.5, beamW);
+  // Vertical side posts
+  drawBeam(beamW * 0.5, 0, beamW * 0.5, S, beamW);
+  drawBeam(S - beamW * 0.5, 0, S - beamW * 0.5, S, beamW);
+  // Center upright
+  drawBeam(S * 0.5, 0, S * 0.5, S, beamW);
+  // Diagonal braces
+  drawBeam(0, S, S * 0.5, 0, beamW * 0.85);
+  drawBeam(S * 0.5, 0, S, S, beamW * 0.85);
+
+  // Iron joinery pegs at beam intersections
+  const pegs = [
+    [beamW * 0.5, beamW * 0.5],
+    [S - beamW * 0.5, beamW * 0.5],
+    [S * 0.5, beamW * 0.5],
+    [beamW * 0.5, S - beamW * 0.5],
+    [S - beamW * 0.5, S - beamW * 0.5],
+    [S * 0.5, S - beamW * 0.5],
+  ];
+  for (const [px, py] of pegs) {
+    g.fillStyle = '#1c1c1f';
+    g.fillRect(px - 3, py - 3, 6, 6);
+    b.fillStyle = 'rgb(240, 240, 240)';
+    b.fillRect(px - 3, py - 3, 6, 6);
+  }
+
+  const pbr = derivePBRMaps(cb.c, 3.2);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (k) slate roofing — dark charcoal slate shingles with chipped edges,
+//     shadowed overlap, and subtle moss patina.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildRoofSlate(variant = 0): TextureSet {
+  const S = 512;
+  const numRows = 8;
+  const rowH = S / numRows;
+  const cm = mkCanvas(S), cb = mkCanvas(S);
+  const g = cm.g, b = cb.g;
+  const r = rng(0x51a7 + variant * 43);
+
+  g.fillStyle = '#181b1f';
+  g.fillRect(0, 0, S, S);
+  b.fillStyle = 'rgb(20, 20, 20)';
+  b.fillRect(0, 0, S, S);
+
+  for (let row = 0; row < numRows; row++) {
+    const y0 = row * rowH;
+    const numCols = 6;
+    const colW = S / numCols;
+    const xOff = (row % 2 === 0 ? 0 : colW * 0.5);
+
+    for (let c = -1; c <= numCols + 1; c++) {
+      const gx = ((c % numCols) + numCols) % numCols;
+      const sr = rngFrom(hash2(gx, row, 0x3312));
+      const bx0 = c * colW + xOff + 2;
+      const bw = colW - 4;
+      const bh = rowH * 1.25;
+
+      const tone = 0.8 + sr() * 0.4;
+      const slateR = Math.round(52 * tone);
+      const slateG = Math.round(58 * tone);
+      const slateB = Math.round(66 * tone);
+
+      g.fillStyle = `rgb(${slateR}, ${slateG}, ${slateB})`;
+      g.fillRect(bx0, y0, bw, bh);
+
+      // Shingle height ramp
+      const shingleGrad = b.createLinearGradient(bx0, y0, bx0, y0 + bh);
+      shingleGrad.addColorStop(0, 'rgb(70, 70, 70)');
+      shingleGrad.addColorStop(0.85, 'rgb(210, 210, 210)');
+      shingleGrad.addColorStop(1, 'rgb(25, 25, 25)');
+      b.fillStyle = shingleGrad;
+      b.fillRect(bx0, y0, bw, bh);
+
+      // Bottom edge bevel highlight
+      g.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      g.fillRect(bx0, y0 + bh - 3, bw, 2);
+      // Under-lap drop shadow
+      g.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      g.fillRect(bx0, y0 + bh - 1, bw, 3);
+    }
+  }
+
+  // Lichen spots on slate
+  for (let i = 0; i < 25; i++) {
+    const lx = r() * S, ly = r() * S, lr = 3 + r() * 10;
+    wrap9(g, S, lx, ly, (ctx) => {
+      ctx.fillStyle = `rgba(145, 160, 130, ${0.25 + r() * 0.25})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, lr, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  const pbr = derivePBRMaps(cb.c, 3.6);
+  const bumpTex = toTex(cb.c, false);
+  return {
+    map: toTex(cm.c, true),
+    bump: bumpTex,
+    normal: pbr.normalTex,
+    roughnessMap: pbr.roughnessTex,
+    aoMap: pbr.aoTex,
+    heightMap: bumpTex,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Parallax Occlusion Shader Injection
 // Reconstructs physical relief depth by raymarching height in tangent space.
 // Hooked safely at <project_vertex> after transformedNormal and mvPosition exist.
@@ -948,6 +1329,57 @@ export function enableParallaxOcclusion(
   material.needsUpdate = true;
 }
 
+/**
+ * Lightweight height displacement and world-space ambient moss shader injection.
+ * Displaces geometry along its vertex normal using the procedural height/bump map,
+ * and adds organic grime & moss accumulation on upward-facing surfaces.
+ */
+export function applyStoneDisplacement(
+  material: THREE.MeshStandardMaterial,
+  heightTexture: THREE.Texture,
+  displacementScale = 0.22,
+  mossTopWeight = 0.35
+) {
+  material.displacementMap = heightTexture;
+  material.displacementScale = displacementScale;
+  material.displacementBias = -displacementScale * 0.45;
+
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `#include <common>
+      varying vec3 vDispWorldNormal;
+      varying vec3 vDispWorldPos;`
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      vec4 wPos = modelMatrix * vec4(position, 1.0);
+      vDispWorldPos = wPos.xyz;
+      vDispWorldNormal = normalize(mat3(modelMatrix) * normal);`
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>
+      varying vec3 vDispWorldNormal;
+      varying vec3 vDispWorldPos;`
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      vec3 wN = normalize(vDispWorldNormal);
+      float topSlope = clamp(wN.y, 0.0, 1.0);
+      if (topSlope > 0.45) {
+        float mossNoise = sin(vDispWorldPos.x * 0.65 + vDispWorldPos.z * 0.55) * 0.5 + 0.5;
+        vec3 mossTint = vec3(0.24, 0.35, 0.18);
+        float w = smoothstep(0.45, 0.90, topSlope) * mossNoise * ${mossTopWeight.toFixed(2)};
+        diffuseColor.rgb = mix(diffuseColor.rgb, mossTint, w);
+      }`
+    );
+  };
+  material.needsUpdate = true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API — everything cached.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -964,6 +1396,10 @@ const BUILDERS: Record<string, (v: number) => TextureSet> = {
   iron: buildIron,
   bone: () => buildBone(),
   bark: (v) => buildBark(v),
+  ruin_stone: (v) => buildRuinMasonry(v),
+  ancient_wall: (v) => buildRuinMasonry(v),
+  plaster: (v) => buildTimberPlaster(v),
+  roof_slate: (v) => buildRoofSlate(v),
 };
 
 export interface AreaTileSet {
@@ -978,7 +1414,7 @@ export interface AreaTileSet {
 export const CELLAR_TILESET: AreaTileSet = {
   id: 'cellar', outdoor: false, ambience: 'crypt',
   floor: { kind: 'flagstone', variant: 0, repeatFt: 27.5, roughness: 0.96, bumpScale: 0.45, metalness: 0.02 },
-  wall: { kind: 'brick', intactVariant: 0, ruinedVariant: 1 },
+  wall: { kind: 'ruin_stone', intactVariant: 2, ruinedVariant: 0 },
   trim: { woodVariant: 0, ironVariant: 1, sootVariant: 0 },
 };
 
@@ -989,18 +1425,22 @@ export const AREA_TILESETS: Record<string, AreaTileSet> = {
   town: {
     ...CELLAR_TILESET, id: 'town', outdoor: true, ambience: 'town',
     floor: { kind: 'cobble', variant: 0, repeatFt: 22, roughness: 0.9, bumpScale: 0.32, metalness: 0.01 },
+    wall: { kind: 'plaster', intactVariant: 0, ruinedVariant: 0 },
   },
   road: {
     ...CELLAR_TILESET, id: 'road', outdoor: true, ambience: 'wilderness',
     floor: { kind: 'ash_dirt', variant: 1, repeatFt: 34, roughness: 0.98, bumpScale: 0.22, metalness: 0 },
+    wall: { kind: 'ruin_stone', intactVariant: 0, ruinedVariant: 1 },
   },
   ashlands: {
     ...CELLAR_TILESET, id: 'ashlands', outdoor: true, ambience: 'wilderness',
     floor: { kind: 'ash_dirt', variant: 0, repeatFt: 31, roughness: 0.98, bumpScale: 0.24, metalness: 0 },
+    wall: { kind: 'ruin_stone', intactVariant: 0, ruinedVariant: 1 },
   },
   wilderness: {
     ...CELLAR_TILESET, id: 'wilderness', outdoor: true, ambience: 'wilderness',
     floor: { kind: 'ash_grass', variant: 0, repeatFt: 34, roughness: 0.96, bumpScale: 0.28, metalness: 0 },
+    wall: { kind: 'ruin_stone', intactVariant: 0, ruinedVariant: 1 },
   },
 };
 
@@ -1053,6 +1493,18 @@ export function getMaterial(kind: string, variant = 0): THREE.Material {
       roughness = variant === 3 ? 0.92 : 0.97;
       metalness = 0.01;
       bumpScale = variant === 3 ? 0.38 : variant === 4 ? 0.72 : 0.65;
+    } else if (kind === 'ruin_stone' || kind === 'ancient_wall') {
+      roughness = variant === 1 ? 0.95 : 0.88;
+      metalness = 0.02;
+      bumpScale = 0.55;
+    } else if (kind === 'plaster') {
+      roughness = 0.92;
+      metalness = 0.01;
+      bumpScale = 0.42;
+    } else if (kind === 'roof_slate') {
+      roughness = 0.82;
+      metalness = 0.04;
+      bumpScale = 0.52;
     }
 
     m = new THREE.MeshStandardMaterial({
@@ -1067,8 +1519,24 @@ export function getMaterial(kind: string, variant = 0): THREE.Material {
       roughness,
       metalness
     });
+
+    if (kind === 'ruin_stone' || kind === 'ancient_wall') {
+      applyStoneDisplacement(m, set.heightMap, 0.22, variant === 1 ? 0.55 : 0.32);
+    }
   }
 
   matCache.set(key, m);
   return m;
+}
+
+export function getRuinStoneMaterial(variant = 0): THREE.MeshStandardMaterial {
+  return getMaterial('ruin_stone', variant) as THREE.MeshStandardMaterial;
+}
+
+export function getPlasterMaterial(variant = 0): THREE.MeshStandardMaterial {
+  return getMaterial('plaster', variant) as THREE.MeshStandardMaterial;
+}
+
+export function getRoofSlateMaterial(variant = 0): THREE.MeshStandardMaterial {
+  return getMaterial('roof_slate', variant) as THREE.MeshStandardMaterial;
 }

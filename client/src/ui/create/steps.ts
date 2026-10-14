@@ -16,7 +16,7 @@ import {
 } from './gamedata';
 import type { AbilityKey } from './gamedata';
 import {
-  paintPortrait, hashString, SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS,
+  SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS,
   CLOAK_COLORS, LookState, BodyType, FaceDecor, Gender,
   MALE_HAIR_STYLES, FEMALE_HAIR_STYLES,
 } from './portrait';
@@ -243,16 +243,6 @@ function chosenEquipTexts(state: CreateState): string[] {
   });
 }
 
-function portraitCanvas(state: CreateState, displayW: number): HTMLCanvasElement {
-  const c = h('canvas', { class: 'cr-portrait-canvas', width: '512', height: '640' }) as HTMLCanvasElement;
-  c.style.width = `${displayW}px`;
-  c.style.height = `${Math.round(displayW * 1.25)}px`;
-  paintPortrait(c, {
-    race: state.race || 'Human', class: state.charClass || 'Fighter', look: state.look,
-    seed: hashString(state.name || 'nameless') ^ 0x5a17,
-  });
-  return c;
-}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // STEP 0 — ORIGIN (name + race)
@@ -618,7 +608,6 @@ function stepFate(body: HTMLElement, ctx: StepCtx): void {
 // STEP 4 — VISAGE (appearance + live 3D figure & painted portrait)
 // ═════════════════════════════════════════════════════════════════════════════
 let activeVisageView: Visage3DView | null = null;
-let currentVisageMode: '3d' | 'painted' = '3d';
 let activeHairFilter: 'masculine' | 'feminine' | 'all' | null = null;
 
 function getRaceTraitsSummary(raceId: string): { title: string; desc: string } {
@@ -665,46 +654,20 @@ function getRaceTraitsSummary(raceId: string): { title: string; desc: string } {
   };
 }
 
-function renderPreviewFrame(s: CreateState, ctx: StepCtx, displayW: number, displayH: number): HTMLElement {
+function renderPreviewFrame(s: CreateState, _ctx: StepCtx, displayW: number, displayH: number): HTMLElement {
   const col = h('div', { class: 'cr-portrait-col' });
-
-  // Toggle between 3D in-game figure and oil-paint portrait
-  const toggle = h('div', { class: 'cr-preview-toggle' },
-    h('button', {
-      type: 'button',
-      class: currentVisageMode === '3d' ? 'sel' : '',
-      onclick: () => {
-        if (currentVisageMode !== '3d') {
-          currentVisageMode = '3d';
-          ctx.update({});
-        }
-      },
-      text: '3D FIGURE',
-    }),
-    h('button', {
-      type: 'button',
-      class: currentVisageMode === 'painted' ? 'sel' : '',
-      onclick: () => {
-        if (currentVisageMode !== 'painted') {
-          currentVisageMode = 'painted';
-          ctx.update({});
-        }
-      },
-      text: 'PAINTED PORTRAIT',
-    }),
-  );
-
   const frame = h('div', { class: 'cr-portrait-frame' });
+  const host = h('div', { class: 'cr-3d-host' });
 
-  if (currentVisageMode === '3d') {
-    const host = h('div', { class: 'cr-3d-host' });
-    activeVisageView = new Visage3DView(host, s, displayW, displayH);
-    frame.append(host);
+  if (activeVisageView) {
+    activeVisageView.update(s);
+    host.append(activeVisageView.root);
   } else {
-    frame.append(portraitCanvas(s, displayW));
+    activeVisageView = new Visage3DView(host, s, displayW, displayH);
   }
 
-  col.append(toggle, frame);
+  frame.append(host);
+  col.append(frame);
   return col;
 }
 
@@ -1032,9 +995,12 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
 // dispatcher
 // ═════════════════════════════════════════════════════════════════════════════
 export function renderStepBody(body: HTMLElement, ctx: StepCtx): void {
-  if (activeVisageView) {
-    activeVisageView.dispose();
-    activeVisageView = null;
+  // Retain the 3D visage view during character forge (step 4) and oath review (step 6)
+  if (ctx.state.step !== 4 && ctx.state.step !== 6) {
+    if (activeVisageView) {
+      activeVisageView.dispose();
+      activeVisageView = null;
+    }
   }
   body.replaceChildren();
   switch (ctx.state.step) {

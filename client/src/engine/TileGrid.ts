@@ -30,8 +30,75 @@ import { buildDoors, buildWalls } from './tilegrid/walls';
 import { buildProps } from './tilegrid/props';
 import { buildExits } from './tilegrid/structures';
 
-export { CELL, WALL_H, normalizeHalfTile, isPointInHalfTile } from './tilegrid/shared';
+export { CELL, WALL_H, normalizeHalfTile, isPointInHalfTile, addRotatedCollider } from './tilegrid/shared';
 export type { Collider, RegionHandle } from './tilegrid/shared';
+
+function resolveCollider(c: Collider, x: number, z: number, r: number): [number, number] {
+  if (c.decor || c.yMin > 5.5 || c.yMax < 0.5) return [x, z];
+
+  if (c.rotY) {
+    const cx = c.cx !== undefined ? c.cx : (c.x1 + c.x2) / 2;
+    const cz = c.cz !== undefined ? c.cz : (c.z1 + c.z2) / 2;
+    const hw = Math.abs(c.x2 - c.x1) / 2;
+    const hd = Math.abs(c.z2 - c.z1) / 2;
+
+    const cos = Math.cos(c.rotY);
+    const sin = Math.sin(c.rotY);
+    const dx = x - cx;
+    const dz = z - cz;
+
+    // Transform world point into local space of the box (-rotY)
+    const lx = dx * cos + dz * sin;
+    const lz = -dx * sin + dz * cos;
+
+    // Closest point in local AABB [-hw, hw] x [-hd, hd]
+    const px = Math.max(-hw, Math.min(lx, hw));
+    const pz = Math.max(-hd, Math.min(lz, hd));
+
+    const ldx = lx - px;
+    const ldz = lz - pz;
+    const dist = Math.hypot(ldx, ldz);
+
+    if (dist < r) {
+      let pushX = 0, pushZ = 0;
+      if (dist > 0.0001) {
+        const overlap = r - dist;
+        pushX = (ldx / dist) * overlap;
+        pushZ = (ldz / dist) * overlap;
+      } else {
+        const left = lx - (-hw);
+        const right = hw - lx;
+        const top = lz - (-hd);
+        const bottom = hd - lz;
+        const minPen = Math.min(left, right, top, bottom);
+        if (minPen === left) pushX = -(left + r);
+        else if (minPen === right) pushX = (right + r);
+        else if (minPen === top) pushZ = -(top + r);
+        else pushZ = (bottom + r);
+      }
+      x += pushX * cos - pushZ * sin;
+      z += pushX * sin + pushZ * cos;
+    }
+    return [x, z];
+  }
+
+  const px = Math.max(c.x1, Math.min(x, c.x2));
+  const pz = Math.max(c.z1, Math.min(z, c.z2));
+  const dx = x - px, dz = z - pz;
+  const d = Math.sqrt(dx * dx + dz * dz);
+  if (d < r) {
+    if (d > 0.0001) {
+      x = px + (dx / d) * r;
+      z = pz + (dz / d) * r;
+    } else {
+      const l = Math.abs(x - c.x1), rr = Math.abs(c.x2 - x), t = Math.abs(z - c.z1), b = Math.abs(c.z2 - z);
+      const m = Math.min(l, rr, t, b);
+      if (m === l) x = c.x1 - r; else if (m === rr) x = c.x2 + r;
+      else if (m === t) z = c.z1 - r; else z = c.z2 + r;
+    }
+  }
+  return [x, z];
+}
 
 export class TileGrid {
   // internal: shared with tilegrid/* builder modules (not public API)
@@ -136,7 +203,11 @@ export class TileGrid {
       blockedHalfTiles: this.blockedHalfTiles,
       // colliders were built in region-local feet; store them world-resolved
       colliders: this.colliders.map((c) => ({
-        ...c, x1: c.x1 + origin.x, x2: c.x2 + origin.x, z1: c.z1 + origin.z, z2: c.z2 + origin.z,
+        ...c,
+        x1: c.x1 + origin.x, x2: c.x2 + origin.x,
+        z1: c.z1 + origin.z, z2: c.z2 + origin.z,
+        cx: c.cx !== undefined ? c.cx + origin.x : (c.rotY ? (c.x1 + c.x2) / 2 + origin.x : undefined),
+        cz: c.cz !== undefined ? c.cz + origin.z : (c.rotY ? (c.z1 + c.z2) / 2 + origin.z : undefined),
       })),
       exits: (map.exits || []).map((e) => ({
         id: e.id, label: e.label,
@@ -467,20 +538,7 @@ export class TileGrid {
         if (x < region.minX - 24 || x > region.maxX + 24 ||
             z < region.minZ - 24 || z > region.maxZ + 24) continue;
         for (const c of region.colliders) {
-          if (c.decor || c.yMin > 5.5 || c.yMax < 0.5) continue;
-          const px = Math.max(c.x1, Math.min(x, c.x2));
-          const pz = Math.max(c.z1, Math.min(z, c.z2));
-          const dx = x - px, dz = z - pz;
-          const d = Math.sqrt(dx * dx + dz * dz);
-          if (d < r) {
-            if (d > 0.0001) { x = px + (dx / d) * r; z = pz + (dz / d) * r; }
-            else {
-              const l = Math.abs(x - c.x1), rr = Math.abs(c.x2 - x), t = Math.abs(z - c.z1), b = Math.abs(c.z2 - z);
-              const m = Math.min(l, rr, t, b);
-              if (m === l) x = c.x1 - r; else if (m === rr) x = c.x2 + r;
-              else if (m === t) z = c.z1 - r; else z = c.z2 + r;
-            }
-          }
+          [x, z] = resolveCollider(c, x, z, r);
         }
       }
       // half-tile push-out in the point's neighborhood (region-local lookup)
@@ -548,20 +606,7 @@ export class TileGrid {
       return [x, z];
     }
     for (const c of this.colliders) {
-      if (c.decor || c.yMin > 5.5 || c.yMax < 0.5) continue;
-      const px = Math.max(c.x1, Math.min(x, c.x2));
-      const pz = Math.max(c.z1, Math.min(z, c.z2));
-      let dx = x - px, dz = z - pz;
-      let d = Math.sqrt(dx * dx + dz * dz);
-      if (d < r) {
-        if (d > 0.0001) { x = px + (dx / d) * r; z = pz + (dz / d) * r; }
-        else {
-          const l = Math.abs(x - c.x1), rr = Math.abs(c.x2 - x), t = Math.abs(z - c.z1), b = Math.abs(c.z2 - z);
-          const m = Math.min(l, rr, t, b);
-          if (m === l) x = c.x1 - r; else if (m === rr) x = c.x2 + r;
-          else if (m === t) z = c.z1 - r; else z = c.z2 + r;
-        }
-      }
+      [x, z] = resolveCollider(c, x, z, r);
     }
 
     if (this.blockedHalfTiles.size > 0 && this.map) {

@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import type { TokenLook } from '../types';
 import { softSprite } from '../sprites';
 import {
-  PAL, clothMat, leatherMat, skinMat, metalMat, boneMat, tatterMat,
+  PAL, clothMat, leatherMat, skinMat, hairMat, decorMat, metalMat, boneMat, tatterMat,
   glowMat, cloakMat, cloneMat,
 } from './rigMaterials';
 
@@ -141,9 +141,9 @@ function templates(): Record<string, THREE.Material> {
   TPL = {
     cloth: clothMat(0xffffff),       // tunic/legs/hood — colour per actor
     skin: skinMat(0xffffff),         // head/hands — tone per actor
-    hair: clothMat(0xffffff),        // hair — colour per actor
+    hair: hairMat(0xffffff),         // hair — colour per actor
     eyes: glowMat(0xffffff),         // colored glowing irises
-    decor: clothMat(0xffffff),        // facial warpaint/scars/runes
+    decor: decorMat(0xffffff),       // facial warpaint/scars/runes
     horn: metalMat(0x2d2420, 0.2, 0.8), // tiefling horns / claws
     tusk: boneMat(PAL.bone),         // orc tusks
     leather: leatherMat(),
@@ -497,9 +497,10 @@ export class HumanoidRig {
     const skinColor = parseHex(look.skinTone, this.isSkeleton ? PAL.bone : (this.isWraith ? 0xb8c4be : PAL.skinAshen));
     const hairColor = parseHex(look.hairColor, HAIR_CHOICES[Math.floor(hashSeed(seed + 31) * HAIR_CHOICES.length)]);
     const eyeColor = parseHex(look.eyeColor, 0xc8781f);
-    let decorColor = 0x7a1f1f;
-    if (decor === 'scars') decorColor = 0xba766c;
-    else if (decor === 'runes') decorColor = 0xffa040;
+    let decorColor = 0xba766c;
+    if (decor === 'scars') decorColor = 0xb25950;
+    else if (decor === 'warpaint') decorColor = 0x942222;
+    else if (decor === 'runes') decorColor = 0xe09838;
     else if (decor === 'skull') decorColor = 0xdad5ca;
     else if (decor === 'freckles') decorColor = 0x5c3822;
 
@@ -516,8 +517,8 @@ export class HumanoidRig {
       const clone = cloneMat(tpl);
       const role = nameOf(tpl);
       const col = role ? roleColor[role] : null;
-      if (col !== null && col !== undefined && (clone as THREE.MeshStandardMaterial).color) {
-        (clone as THREE.MeshStandardMaterial).color.set(col);
+      if (col !== null && col !== undefined && (clone as any).color) {
+        (clone as any).color.set(col);
       }
       matMap.set(tpl, clone);
       if ((clone as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
@@ -656,10 +657,7 @@ export class HumanoidRig {
         { sx: 1.05, sy: 0.92, sz: 1.15, tint: shade(0.96), bias: { [B.SPINE2]: 8 } });
     }
 
-    // tunic skirt + hip wrap
-    f.tube(V(0, J[B.PELVIS].y + 0.28, 0), 0.44 * P.torsoW, 0.55 * P.torsoW, 0.62, T.cloth, { tint: shade(0.8) });
-    f.tube(V(0, J[B.PELVIS].y - 0.18, 0), 0.5 * P.torsoW, 0.6 * P.torsoW, 0.78, T.cloth, { tint: shade(0.66) });
-    // sleeves + pants
+    // sleeves + pants (clean bare limbs ready for modular equipment)
     for (const side of [B.ARM_L, B.ARM_R]) {
       const fore = side === B.ARM_L ? B.FOREARM_L : B.FOREARM_R;
       const hand = side === B.ARM_L ? B.HAND_L : B.HAND_R;
@@ -686,39 +684,48 @@ export class HumanoidRig {
       f.box(V(a.x, a.y - 0.07, a.z + 0.22), V(0.34, 0.22, 0.78), T.leather, { tint: shade(0.7) });
       f.box(V(a.x, a.y - 0.07, a.z + 0.58), V(0.3, 0.16, 0.22), T.leather, { tint: shade(0.5) });
     }
-    // belt + buckle + diagonal strap
-    f.tube(V(0, J[B.PELVIS].y + 0.42, 0), 0.47 * P.torsoW, 0.47 * P.torsoW, 0.2, T.leather, { tint: shade(0.85) }, false);
-    f.box(V(0, J[B.PELVIS].y + 0.42, 0.46 * P.torsoW), V(0.17, 0.17, 0.07), T.metal, { bias: { [B.SPINE1]: 4, [B.PELVIS]: 3 } });
-    f.box(V(-0.12, J[B.SPINE1].y + 0.62, 0.36 * P.torsoW), V(0.13, 1.15, 0.05), T.leather,
-      { tint: shade(0.8), bias: { [B.SPINE2]: 4, [B.SPINE1]: 2 } }, new THREE.Euler(0, 0, 0.42));
-    // pauldrons (battered iron, asymmetric shade)
-    const padR = P.shoulderPad;
-    for (const side of [B.ARM_L, B.ARM_R]) {
-      const s = side === B.ARM_L ? 1 : -1;
-      f.sphere(J[side].clone().add(V(s * 0.04, 0.14, 0)), padR, T.metal,
-        { sx: 1.15, sy: 0.9, sz: 1.05, tint: shade(side === B.ARM_L ? 0.85 : 1.0), bias: { [side]: 30 } },
-        Math.PI * 2, Math.PI * 0.62);
-    }
+    // simple waist belt + buckle (no chest strap)
+    f.tube(V(0, J[B.PELVIS].y + 0.42, 0), 0.47 * P.torsoW, 0.47 * P.torsoW, 0.16, T.leather, { tint: shade(0.85) }, false);
+    f.box(V(0, J[B.PELVIS].y + 0.42, 0.46 * P.torsoW), V(0.15, 0.15, 0.06), T.metal, { bias: { [B.SPINE1]: 4, [B.PELVIS]: 3 } });
+
     // bracers + glove mitts
     for (const [fo, ha] of [[B.FOREARM_L, B.HAND_L], [B.FOREARM_R, B.HAND_R]] as [number, number][]) {
       f.capsule(lerp(J[fo], J[ha], 0.3), lerp(J[fo], J[ha], 0.86), 0.155 * LR, T.leather, { tint: shade(0.9) });
       f.sphere(J[ha].clone().add(V(0, -0.16, 0.01)), 0.145, T.leather,
         { sx: 1.1, sy: 1.35, sz: 0.85, tint: shade(0.75), bias: { [ha]: 8 } });
     }
-    // neck + head (skin) — stylized skull with brow + jaw hint
-    f.capsule(J[B.NECK], lerp(J[B.HEAD], J[B.NECK], 0.25), 0.14, T.skin, { tint: shade(0.8) });
-    const H = J[B.HEAD], S = P.skullScale;
-    f.sphere(H, 0.4 * S, T.skin, { sx: 0.88, sy: 1.0, sz: 0.92, bias: { [B.HEAD]: 6, [B.NECK]: 0.4 } });
-    f.sphere(H.clone().add(V(0, 0.02, 0.16)), 0.33 * S, T.skin, { sx: 0.82, sy: 1.02, sz: 0.92, bias: { [B.HEAD]: 6 } });
-    f.box(H.clone().add(V(0, 0.1 * S, 0.31 * S)), V(0.4, 0.075, 0.12), T.skin, { bias: { [B.HEAD]: 8 } });
-    f.box(H.clone().add(V(0, -0.24 * S, 0.13 * S)), V(0.26, 0.2, 0.3), T.skin, { bias: { [B.HEAD]: 8 } });
-    f.box(H.clone().add(V(0, -0.05 * S, 0.36 * S)), V(0.075, 0.12, 0.1), T.skin, { bias: { [B.HEAD]: 8 } });
 
-    // eyes with colored irises
+    // neck + single sculpt head (skin) — clean cranium, jaw contour, ears, and forward eyes
+    f.capsule(J[B.NECK], lerp(J[B.HEAD], J[B.NECK], 0.2), 0.135, T.skin, { sx: 0.95, sz: 0.95, tint: shade(0.82) });
+    const H = J[B.HEAD], S = P.skullScale;
+    // Single unified head sphere (no nested spheres)
+    f.sphere(H, 0.38 * S, T.skin, { sx: 0.88, sy: 1.04, sz: 0.95, bias: { [B.HEAD]: 20 } });
+    // Tapered jaw & chin
+    f.box(H.clone().add(V(0, -0.22 * S, 0.10 * S)), V(0.28 * S, 0.18 * S, 0.26 * S), T.skin, { bias: { [B.HEAD]: 20 } });
+    // Subtle nose bridge
+    f.box(H.clone().add(V(0, -0.04 * S, 0.37 * S)), V(0.065 * S, 0.12 * S, 0.07 * S), T.skin, { bias: { [B.HEAD]: 20 } });
+
+    // Normal humanoid ears (if not elf)
+    if (!cfg.race.toLowerCase().includes('elf') && !cfg.race.toLowerCase().includes('fairy')) {
+      for (const side of [1, -1]) {
+        f.capsule(
+          H.clone().add(V(side * 0.34 * S, 0.02 * S, -0.02 * S)),
+          H.clone().add(V(side * 0.36 * S, -0.08 * S, -0.04 * S)),
+          0.045 * S,
+          T.skin,
+          { sx: 0.6, sz: 1.1, bias: { [B.HEAD]: 20 } }
+        );
+      }
+    }
+
+    // Eyes with visible irises & pupils on the front facial plane
     for (const ex of [-0.115, 0.115]) {
-      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.29 * S)), 0.046, T.void, { bias: { [B.HEAD]: 50 } });
-      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.32 * S)), 0.034, T.eyes, { bias: { [B.HEAD]: 50 } });
-      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.338 * S)), 0.016, T.void, { bias: { [B.HEAD]: 50 } });
+      // Sclera / eye socket
+      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.355 * S)), 0.042 * S, T.void, { sx: 1.1, sy: 0.85, sz: 0.4, bias: { [B.HEAD]: 50 } });
+      // Iris (colored with T.eyes)
+      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.366 * S)), 0.032 * S, T.eyes, { sx: 1.0, sy: 1.0, sz: 0.3, bias: { [B.HEAD]: 50 } });
+      // Pupil (dark center)
+      f.sphere(H.clone().add(V(ex * S, 0.02 * S, 0.374 * S)), 0.016 * S, T.void, { sx: 1.0, sy: 1.0, sz: 0.2, bias: { [B.HEAD]: 50 } });
     }
 
     // ── racial anatomical features ──────────────────────────────────────────
@@ -806,98 +813,108 @@ export class HumanoidRig {
     }
 
     // ── 3D facial markings ──────────────────────────────────────────────────
+    // ── 3D facial markings (precisely positioned on the front facial plane) ──
     if (cfg.faceDecor === 'scars') {
-      f.box(H.clone().add(V(0.14 * S, 0.04 * S, 0.33 * S)), V(0.035, 0.28, 0.025), T.decor,
-        { bias: { [B.HEAD]: 50 } }, new THREE.Euler(0, 0, 0.32));
+      f.box(H.clone().add(V(-0.13 * S, 0.02 * S, 0.372 * S)), V(0.035 * S, 0.24 * S, 0.02 * S), T.decor,
+        { bias: { [B.HEAD]: 50 } }, new THREE.Euler(0, 0, 0.3));
     } else if (cfg.faceDecor === 'warpaint') {
-      f.box(H.clone().add(V(0, 0.02 * S, 0.34 * S)), V(0.38 * S, 0.065 * S, 0.025), T.decor,
+      f.box(H.clone().add(V(0, 0.02 * S, 0.372 * S)), V(0.44 * S, 0.065 * S, 0.02 * S), T.decor,
         { bias: { [B.HEAD]: 50 } });
     } else if (cfg.faceDecor === 'runes') {
-      f.sphere(H.clone().add(V(0, 0.18 * S, 0.31 * S)), 0.052 * S, T.decor,
-        { sx: 1.2, sy: 1.2, sz: 0.35, bias: { [B.HEAD]: 50 } });
+      f.box(H.clone().add(V(0, 0.18 * S, 0.358 * S)), V(0.09 * S, 0.09 * S, 0.025 * S), T.decor,
+        { bias: { [B.HEAD]: 50 } }, new THREE.Euler(0, 0, Math.PI / 4));
+      f.sphere(H.clone().add(V(0, 0.18 * S, 0.364 * S)), 0.03 * S, T.decor,
+        { bias: { [B.HEAD]: 50 } });
     } else if (cfg.faceDecor === 'freckles') {
-      for (const fx of [-0.15, -0.08, 0.08, 0.15]) {
-        f.sphere(H.clone().add(V(fx * S, -0.04 * S, 0.32 * S)), 0.018 * S, T.decor,
+      for (const fx of [-0.14, -0.07, 0.07, 0.14]) {
+        f.sphere(H.clone().add(V(fx * S, -0.03 * S, 0.37 * S)), 0.016 * S, T.decor,
           { bias: { [B.HEAD]: 50 } });
       }
     } else if (cfg.faceDecor === 'skull') {
-      f.box(H.clone().add(V(0, -0.12 * S, 0.32 * S)), V(0.24 * S, 0.12 * S, 0.03), T.decor,
+      f.box(H.clone().add(V(0, -0.16 * S, 0.35 * S)), V(0.24 * S, 0.12 * S, 0.03 * S), T.decor,
         { bias: { [B.HEAD]: 50 } });
     }
 
-    // ── 10 distinct hairstyles ───────────────────────────────────────────────
+    // ── 10 modular hairstyles (Lego-style snap-on pieces over a clean bald head) ──
     const hStyle = cfg.hair;
-    const hasBaseCap = hStyle !== 'none';
-    if (hasBaseCap) {
-      f.sphere(H.clone().add(V(0, 0.05 * S, -0.02 * S)), 0.42 * S, T.hair,
-        { sx: 0.94, sy: 0.96, sz: 1.0, bias: { [B.HEAD]: 12 } }, Math.PI * 2, Math.PI * 0.55);
-      f.box(H.clone().add(V(0, 0.06 * S, 0.3 * S)), V(0.34, 0.06, 0.1), T.hair, { bias: { [B.HEAD]: 12 } });
-    }
-
     if (hStyle === 'short') {
       // Cropped warrior cut
-      f.box(H.clone().add(V(0, 0.09 * S, 0.28 * S)), V(0.38 * S, 0.08 * S, 0.1 * S), T.hair, { bias: { [B.HEAD]: 15 } });
+      f.sphere(H.clone().add(V(0, 0.07 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
+      f.box(H.clone().add(V(0, 0.18 * S, 0.22 * S)), V(0.34 * S, 0.12 * S, 0.24 * S), T.hair, { bias: { [B.HEAD]: 20 } });
       for (const side of [1, -1]) {
-        f.box(H.clone().add(V(side * 0.36 * S, 0.02 * S, 0.05 * S)), V(0.06 * S, 0.22 * S, 0.22 * S), T.hair, { bias: { [B.HEAD]: 15 } });
+        f.box(H.clone().add(V(side * 0.34 * S, 0.02 * S, 0.04 * S)), V(0.04 * S, 0.18 * S, 0.18 * S), T.hair, { bias: { [B.HEAD]: 20 } });
       }
     } else if (hStyle === 'topknot') {
-      // Topknot bun
-      f.sphere(H.clone().add(V(0, 0.48 * S, -0.02 * S)), 0.14 * S, T.hair, { bias: { [B.HEAD]: 30 } });
-      f.tube(V(0, H.y + 0.42 * S, -0.02 * S), 0.08 * S, 0.09 * S, 0.06 * S, T.leather, { bias: { [B.HEAD]: 30 } });
+      // Topknot: smooth swept cap + bun + tie
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.39 * S, T.hair,
+        { sx: 0.93, sy: 0.97, sz: 0.98, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.5);
+      f.sphere(H.clone().add(V(0, 0.44 * S, -0.04 * S)), 0.15 * S, T.hair, { bias: { [B.HEAD]: 30 } });
+      f.tube(V(0, H.y + 0.38 * S, -0.04 * S), 0.08 * S, 0.09 * S, 0.05 * S, T.leather, { bias: { [B.HEAD]: 30 } });
     } else if (hStyle === 'long') {
-      // Long hair flowing down the back
-      f.box(H.clone().add(V(0, -0.32 * S, -0.3 * S)), V(0.44 * S, 0.8 * S, 0.14 * S), T.hair, { bias: { [B.HEAD]: 5 } });
+      // Long hair flowing down the back and shoulders
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
+      f.box(H.clone().add(V(0, -0.32 * S, -0.28 * S)), V(0.44 * S, 0.82 * S, 0.14 * S), T.hair, { bias: { [B.HEAD]: 10, [B.NECK]: 10 } });
       for (const side of [1, -1]) {
-        f.capsule(H.clone().add(V(side * 0.28 * S, 0, 0.08 * S)), H.clone().add(V(side * 0.26 * S, -0.5 * S, 0.12 * S)),
-          0.06 * S, T.hair, { bias: { [B.HEAD]: 8, [B.NECK]: 10 } });
+        f.capsule(H.clone().add(V(side * 0.28 * S, 0.04 * S, 0.06 * S)), H.clone().add(V(side * 0.26 * S, -0.5 * S, 0.12 * S)),
+          0.065 * S, T.hair, { bias: { [B.HEAD]: 12, [B.NECK]: 10 } });
       }
     } else if (hStyle === 'braids') {
       // Viking braids
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
       for (const side of [1, -1]) {
-        f.capsule(H.clone().add(V(side * 0.26 * S, 0.02 * S, 0.1 * S)), H.clone().add(V(side * 0.2 * S, -0.65 * S, 0.18 * S)),
-          0.068 * S, T.hair, { bias: { [B.HEAD]: 10, [B.NECK]: 15 } });
+        f.capsule(H.clone().add(V(side * 0.26 * S, 0.04 * S, 0.08 * S)), H.clone().add(V(side * 0.2 * S, -0.65 * S, 0.18 * S)),
+          0.07 * S, T.hair, { bias: { [B.HEAD]: 12, [B.NECK]: 15 } });
       }
     } else if (hStyle === 'ponytail') {
       // High ponytail arching back
-      f.sphere(H.clone().add(V(0, 0.38 * S, -0.2 * S)), 0.14 * S, T.hair, { bias: { [B.HEAD]: 25 } });
-      f.capsule(H.clone().add(V(0, 0.36 * S, -0.22 * S)), H.clone().add(V(0.04 * S, -0.35 * S, -0.45 * S)),
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
+      f.sphere(H.clone().add(V(0, 0.34 * S, -0.22 * S)), 0.13 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+      f.capsule(H.clone().add(V(0, 0.32 * S, -0.24 * S)), H.clone().add(V(0.04 * S, -0.38 * S, -0.46 * S)),
         0.095 * S, T.hair, { bias: { [B.HEAD]: 25 } });
     } else if (hStyle === 'flowing') {
       // Flowing locks cascading over shoulders and back
-      f.box(H.clone().add(V(0, -0.42 * S, -0.32 * S)), V(0.56 * S, 1.05 * S, 0.18 * S), T.hair, { bias: { [B.HEAD]: 6, [B.NECK]: 10 } });
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
+      f.box(H.clone().add(V(0, -0.42 * S, -0.3 * S)), V(0.56 * S, 1.05 * S, 0.18 * S), T.hair, { bias: { [B.HEAD]: 10, [B.NECK]: 10 } });
       for (const side of [1, -1]) {
-        f.capsule(H.clone().add(V(side * 0.26 * S, 0, 0.08 * S)), H.clone().add(V(side * 0.28 * S, -0.68 * S, 0.18 * S)),
-          0.085 * S, T.hair, { bias: { [B.HEAD]: 8, [B.NECK]: 12 } });
+        f.capsule(H.clone().add(V(side * 0.28 * S, 0.02 * S, 0.06 * S)), H.clone().add(V(side * 0.28 * S, -0.68 * S, 0.18 * S)),
+          0.085 * S, T.hair, { bias: { [B.HEAD]: 10, [B.NECK]: 12 } });
       }
     } else if (hStyle === 'twin_braids') {
       // Twin maiden braids hanging over front
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
       for (const side of [1, -1]) {
-        f.capsule(H.clone().add(V(side * 0.28 * S, 0.02 * S, 0.04 * S)), H.clone().add(V(side * 0.24 * S, -0.72 * S, 0.22 * S)),
-          0.065 * S, T.hair, { bias: { [B.HEAD]: 8, [B.NECK]: 15 } });
-        f.sphere(H.clone().add(V(side * 0.24 * S, -0.74 * S, 0.22 * S)), 0.04 * S, T.leather, { bias: { [B.HEAD]: 8 } });
+        f.capsule(H.clone().add(V(side * 0.28 * S, 0.04 * S, 0.04 * S)), H.clone().add(V(side * 0.24 * S, -0.72 * S, 0.22 * S)),
+          0.065 * S, T.hair, { bias: { [B.HEAD]: 10, [B.NECK]: 15 } });
+        f.sphere(H.clone().add(V(side * 0.24 * S, -0.74 * S, 0.22 * S)), 0.04 * S, T.leather, { bias: { [B.HEAD]: 10 } });
       }
     } else if (hStyle === 'chignon') {
       // Low braided chignon bun at nape
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
       f.sphere(H.clone().add(V(0, -0.08 * S, -0.38 * S)), 0.22 * S, T.hair, { sx: 1.2, sy: 1.0, sz: 0.85, bias: { [B.HEAD]: 25 } });
       f.rib(H.clone().add(V(0, -0.08 * S, -0.38 * S)), 0.18 * S, 0.04 * S, T.hair, { bias: { [B.HEAD]: 25 } });
     } else if (hStyle === 'bob') {
       // Pixie bob contouring the jawline
-      f.capsule(H.clone().add(V(0.36 * S, 0.08 * S, 0)), H.clone().add(V(0.32 * S, -0.32 * S, 0.12 * S)), 0.12 * S, T.hair, { bias: { [B.HEAD]: 25 } });
-      f.capsule(H.clone().add(V(-0.36 * S, 0.08 * S, 0)), H.clone().add(V(-0.32 * S, -0.32 * S, 0.12 * S)), 0.12 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+      f.sphere(H.clone().add(V(0, 0.06 * S, -0.01 * S)), 0.395 * S, T.hair,
+        { sx: 0.94, sy: 0.98, sz: 1.0, bias: { [B.HEAD]: 20 } }, Math.PI * 2, Math.PI * 0.52);
+      f.capsule(H.clone().add(V(0.36 * S, 0.08 * S, 0)), H.clone().add(V(0.32 * S, -0.32 * S, 0.12 * S)), 0.11 * S, T.hair, { bias: { [B.HEAD]: 25 } });
+      f.capsule(H.clone().add(V(-0.36 * S, 0.08 * S, 0)), H.clone().add(V(-0.32 * S, -0.32 * S, 0.12 * S)), 0.11 * S, T.hair, { bias: { [B.HEAD]: 25 } });
       f.box(H.clone().add(V(0, -0.15 * S, -0.34 * S)), V(0.48 * S, 0.45 * S, 0.14 * S), T.hair, { bias: { [B.HEAD]: 25 } });
     }
 
-    // hood up: deep cowl; down: mantle yoke at the shoulders
+    // hood up: deep cowl; down: bare neck/shoulders (no collar)
     if (cfg.hoodUp) {
       const cowl = H.clone().add(V(0, 0.08 * S, -0.05));
       f.sphere(cowl, 0.5 * S, T.cloth,
         { sx: 1.02, sy: 1.12, sz: 1.06, tint: shade(0.9), bias: { [B.HEAD]: 5, [B.NECK]: 0.6 } },
         Math.PI * 1.45, Math.PI * 0.72);
       f.tube(V(0, J[B.NECK].y + 0.1, -0.1), 0.42, 0.62, 0.55, T.cloth, { tint: shade(0.75), bias: { [B.NECK]: 4, [B.SPINE2]: 2 } });
-    } else {
-      f.sphere(V(0, J[B.SPINE2].y + 0.52, -0.02), 0.62 * P.torsoW, T.cloth,
-        { sx: 1.3, sy: 0.72, sz: 1.0, tint: shade(0.88), bias: { [B.SPINE2]: 6, [B.CLAV_L]: 1, [B.CLAV_R]: 1 } },
-        Math.PI * 2, Math.PI * 0.5);
     }
   }
 

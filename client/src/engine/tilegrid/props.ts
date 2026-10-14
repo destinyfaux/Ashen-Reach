@@ -8,7 +8,7 @@ import type { MapDef, PropDef } from '../types';
 import type { ScatterItem } from './shared';
 import { getMaterial, hash2, rngFrom } from '../materials';
 import { glowSprite } from '../sprites';
-import { CELL, WALL_H, dirtField } from './shared';
+import { CELL, WALL_H, dirtField, addRotatedCollider } from './shared';
 import { makeFernGeometry, makeRockGeometry, makeRockMaterial, makeSnowDriftGeometry, makeTwigGeometry, makeWildflowerGeometry, scatter } from './geo';
 import { buildGrassland } from './flora';
 import { buildTrees } from './trees';
@@ -258,8 +258,9 @@ export function buildProps(grid: TileGrid, map: MapDef) {
       lid.rotation.z = Math.PI / 2; lid.rotation.y = Math.PI / 2;
       lid.position.y = 2.4; lid.castShadow = true; g.add(lid);
       g.position.set(x, 0, z);
+      g.rotation.y = p.rotY || 0;
       grid.group.add(g);
-      grid.colliders.push({ x1: x - 2.2, z1: z - 4.4, x2: x + 2.2, z2: z + 4.4, yMin: 0, yMax: 3 });
+      addRotatedCollider(grid.colliders, x, z, 0, 0, 2.1, 4.3, 0, 3, p.rotY || 0);
     } else if (p.type === 'altar') {
       const g = new THREE.Group();
       const block = new THREE.Mesh(new THREE.BoxGeometry(10, 3.2, 6), bone);
@@ -272,8 +273,9 @@ export function buildProps(grid: TileGrid, map: MapDef) {
       }));
       glow.scale.setScalar(7); glow.position.y = 5; g.add(glow);
       g.position.set(x, 0, z);
+      g.rotation.y = p.rotY || 0;
       grid.group.add(g);
-      grid.colliders.push({ x1: x - 5, z1: z - 3, x2: x + 5, z2: z + 3, yMin: 0, yMax: 3.5 });
+      addRotatedCollider(grid.colliders, x, z, 0, 0, 5, 3, 0, 3.5, p.rotY || 0);
     } else if (p.type === 'rubble') {
       const n = 2 + Math.floor(r() * 3);
       for (let i = 0; i < n; i++) {

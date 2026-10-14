@@ -1452,3 +1452,67 @@ Work Log:
 
 Stage Summary:
 - Players now have an immersive, live 3D character creation forge where every customization option (gender form, frame, 10 hairstyles, skin tones, hair colors, glowing eye colors, face markings, and race traits like horns/ears/tails/tusks/beards) is previewable in real time and carries over seamlessly into the 3D multiplayer world.
+
+---
+Task ID: 18
+Agent: senior software engineer
+Task: Visage 3D Viewport & Modular Rig Rebuild — camera framing, auto-spin disable, view state persistence across edits, Lego hair modularity, color fixes, collar/skirt/strap/pauldron removal, single head sculpt, and removal of painted portrait.
+
+Work Log:
+- Addressed all user grievances with Visage preview viewport and 3D character model:
+  1. Viewport State & Reset Fix:
+     - Stopped camera resets when making changes in visage. `Visage3DView` now remembers orbit state (`savedYaw`, `savedPitch`, `savedDistance`, `savedTargetY`, `savedAutoRotate`) across character rebuilds.
+     - Disabled auto-spin by default (`savedAutoRotate = false`).
+     - Fixed front camera framing (`distance = 9.2`, `targetY = 2.85`, `fov = 38`): now displays the entire character body from pedestal to crown instead of only legs/waist.
+     - In `steps.ts`: `renderPreviewFrame` reuses `activeVisageView` and calls `update(s)` rather than destroying and rebuilding the WebGL canvas on every swatch click.
+  2. Single Head Sculpt & Eye/Marking Visibility:
+     - Removed the inner/outer double sphere in `HumanoidRig.ts`. Replaced with a single clean, noble cranium ellipsoid (`f.sphere(H, 0.38 * S, ...)`), jaw, nose, and natural ears for standard humanoids.
+     - Fixed eye irises and pupils being buried: placed forward-facing sockets, glowing colored irises (`T.eyes`), and pupils directly on the facial plane.
+     - Fixed facial markings (scars, warpaint, runes, freckles, skull) being obscured: placed directly on the face contour with distinct `decorMat` and `decorColor`.
+  3. Hair Modularity & Color Fix:
+     - Removed unconditional `hasBaseCap` that placed an obscuring pseudo-hair helmet over heads.
+     - Redesigned all 10 hairstyles as standalone modular "Lego-style" snap-on hairpieces fitting onto a clean bald head (`hStyle === 'none'` yields a clean bald cranium).
+     - Fixed hair and decor color bug: `rigMaterials.ts` now creates separate `hairMat` and `decorMat` material factories with distinct cache keys so hair and decor have their own geometry buckets and do not get merged with `clothMat`.
+  4. Basic Rig De-clutter & Modular Equipment:
+     - Removed weird collar (mantle yoke sphere).
+     - Removed chest strap / diagonal harness from the torso.
+     - Removed tunic skirt / kilt cylinders to leave clean, bare legs.
+     - Removed shoulder pauldron spheres.
+     - Left basic rig bare in character creator: removed permanently attached sword and shield from `visage3d.ts`.
+     - In `equipment.ts`: added `axe` / `battleaxe` weapon geometry with steel crescent blade and wood haft, and added modular equipment APIs (`clearEquipment`, `equipWeapon`, `equipShield`, `setEquipment`).
+  5. Painted Portrait Removal:
+     - Removed the painted portrait toggle and canvas from character creation (`renderPreviewFrame`), making the interactive 3D viewport the primary character forge.
+- Verification:
+  - `npm run lint` (`tsc --noEmit`): clean pass with 0 errors.
+  - `npm run build` (`tools/build.mjs` / `compile_applet`): succeeded.
+  - `restart_dev_server`: restarted cleanly.
+
+---
+Task ID: 19
+Agent: senior software engineer
+Task: Environmental Visual Fidelity & Performance Overhaul — procedural dark-fantasy ruin masonry, lightweight height displacement shaders, timber-framed plaster & slate roof architecture, and modular ruin wall assets.
+
+Work Log:
+- Addressed ruin generation performance and visual fidelity issues in `structures.ts` and `materials.ts`:
+  1. Procedural Ruin Masonry & Architectural Materials (`materials.ts`):
+     - Created `buildRuinMasonry`: High-fidelity procedural PBR textures for ancient megalithic ashlar masonry (4 coursed rows, pillowing block faces, deep recessed mortar joints, chisel lines, chipped corners, weather fissures, soot/rain streaks, lichen rosettes, and damp crevices).
+     - Built 3 distinct environmental variants:
+       • Variant 0: Weathered ancient ruin stone (bone/charcoal ashlar, chiseled relief).
+       • Variant 1: Overgrown damp mossy stone (moss-filled joints, algae wash).
+       • Variant 2: Dark crypt/cellar gothic masonry (soot-stained, salt efflorescence).
+     - Created `buildTimberPlaster`: Half-timbered dark fantasy building walls with roughcast lime stucco plaster, heavy dark oak studs/plates/braces, and iron square joinery pegs.
+     - Created `buildRoofSlate`: Dark charcoal slate shingle roofing with overlapping courses, chiseled bottom edges, damp highlights, and lichen patina.
+     - Created `applyStoneDisplacement`: Lightweight vertex height displacement via `onBeforeCompile` + Three.js `displacementMap`, physically displacing mesh vertices along normals while adding world-space contact moss/grime on upward-facing surfaces.
+     - Wired `ruin_stone`, `ancient_wall`, `plaster`, and `roof_slate` into `BUILDERS`, `getTextureSet`, and `getMaterial` with full tangent-space Sobel normals, roughness, cavity AO, and height maps.
+  2. Ruin Wall & Structure Performance Overhaul (`structures.ts`):
+     - Overhauled `buildRuinWall`: Replaced the slow, heavy multi-brick instanced loops (hundreds of individual box instances per wall) with a majestic, clean modular ruin wall asset.
+     - Wall asset features a grand stepped ruined rampart with crenellations, a massive corner pier / tower buttress with plinth base and cornice, a breached/crumbled rampart, and fallen megalithic ashlar blocks.
+     - Cut mesh count from ~500+ draw matrices per wall down to ~8 clean meshes using subdivided geometry with lightweight height displacement.
+     - Upgraded `buildTownBuilding` from flat primitive boxes to authentic dark-fantasy architecture: timber-framed plaster walls, dark slate shingle roofs, weathered stone foundations, and soot-stained stone chimneys.
+     - Upgraded `buildTownWell`, `buildCaveMouth`, and `buildExits` to use procedural `ruin_stone`.
+  3. PBR Texture Repeat Alignment (`walls.ts`):
+     - Synchronized texture repeats across all PBR channels (map, bump, normal, roughnessMap, aoMap, heightMap) so materials tile with pixel-perfect coherence.
+- Verification:
+  - `npm run lint` (`tsc --noEmit`): clean pass with 0 errors.
+  - `compile_applet` (`tools/build.mjs`): succeeded.
+  - `npm test`: clean pass.

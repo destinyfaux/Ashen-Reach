@@ -19,36 +19,60 @@ import * as THREE from 'three';
 import type { Engine } from './Engine';
 import type { Collider } from './TileGrid';
 
-/** Segment P→Q vs AABB; entry t ∈ (0,1] if it crosses, else Infinity. */
-function segBoxT(
+function segAabbT(
   px: number, py: number, pz: number,
   qx: number, qy: number, qz: number,
-  b: Collider
+  x1: number, x2: number,
+  z1: number, z2: number,
+  yMin: number, yMax: number
 ): number {
   const dx = qx - px, dy = qy - py, dz = qz - pz;
   let tmin = 0, tmax = 1;
-  if (Math.abs(dx) < 1e-9) { if (px < b.x1 || px > b.x2) return Infinity; }
+  if (Math.abs(dx) < 1e-9) { if (px < x1 || px > x2) return Infinity; }
   else {
-    let t1 = (b.x1 - px) / dx, t2 = (b.x2 - px) / dx;
+    let t1 = (x1 - px) / dx, t2 = (x2 - px) / dx;
     if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
     if (t1 > tmin) tmin = t1; if (t2 < tmax) tmax = t2;
     if (tmin > tmax) return Infinity;
   }
-  if (Math.abs(dy) < 1e-9) { if (py < b.yMin || py > b.yMax) return Infinity; }
+  if (Math.abs(dy) < 1e-9) { if (py < yMin || py > yMax) return Infinity; }
   else {
-    let t1 = (b.yMin - py) / dy, t2 = (b.yMax - py) / dy;
+    let t1 = (yMin - py) / dy, t2 = (yMax - py) / dy;
     if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
     if (t1 > tmin) tmin = t1; if (t2 < tmax) tmax = t2;
     if (tmin > tmax) return Infinity;
   }
-  if (Math.abs(dz) < 1e-9) { if (pz < b.z1 || pz > b.z2) return Infinity; }
+  if (Math.abs(dz) < 1e-9) { if (pz < z1 || pz > z2) return Infinity; }
   else {
-    let t1 = (b.z1 - pz) / dz, t2 = (b.z2 - pz) / dz;
+    let t1 = (z1 - pz) / dz, t2 = (z2 - pz) / dz;
     if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
     if (t1 > tmin) tmin = t1; if (t2 < tmax) tmax = t2;
     if (tmin > tmax) return Infinity;
   }
   return tmin;
+}
+
+/** Segment P→Q vs Collider (AABB or OBB); entry t ∈ (0,1] if it crosses, else Infinity. */
+function segBoxT(
+  px: number, py: number, pz: number,
+  qx: number, qy: number, qz: number,
+  b: Collider
+): number {
+  if (b.rotY) {
+    const cx = b.cx !== undefined ? b.cx : (b.x1 + b.x2) / 2;
+    const cz = b.cz !== undefined ? b.cz : (b.z1 + b.z2) / 2;
+    const hw = Math.abs(b.x2 - b.x1) / 2;
+    const hd = Math.abs(b.z2 - b.z1) / 2;
+    const cos = Math.cos(b.rotY), sin = Math.sin(b.rotY);
+    const dx1 = px - cx, dz1 = pz - cz;
+    const dx2 = qx - cx, dz2 = qz - cz;
+    const lpx = dx1 * cos + dz1 * sin;
+    const lpz = -dx1 * sin + dz1 * cos;
+    const lqx = dx2 * cos + dz2 * sin;
+    const lqz = -dx2 * sin + dz2 * cos;
+    return segAabbT(lpx, py, lpz, lqx, qy, lqz, -hw, hw, -hd, hd, b.yMin, b.yMax);
+  }
+  return segAabbT(px, py, pz, qx, qy, qz, b.x1, b.x2, b.z1, b.z2, b.yMin, b.yMax);
 }
 
 const _head = new THREE.Vector3();
@@ -227,7 +251,23 @@ export class CameraRig {
         for (const b of list) {
           if (b.decor) continue;
           if (p.y < b.yMin || p.y > b.yMax) continue;
-          if (p.x > b.x1 - 0.4 && p.x < b.x2 + 0.4 && p.z > b.z1 - 0.4 && p.z < b.z2 + 0.4) { hit = true; break; }
+          if (b.rotY) {
+            const cx = b.cx !== undefined ? b.cx : (b.x1 + b.x2) / 2;
+            const cz = b.cz !== undefined ? b.cz : (b.z1 + b.z2) / 2;
+            const hw = Math.abs(b.x2 - b.x1) / 2;
+            const hd = Math.abs(b.z2 - b.z1) / 2;
+            const cos = Math.cos(b.rotY), sin = Math.sin(b.rotY);
+            const dx = p.x - cx, dz = p.z - cz;
+            const lx = dx * cos + dz * sin;
+            const lz = -dx * sin + dz * cos;
+            if (lx > -hw - 0.4 && lx < hw + 0.4 && lz > -hd - 0.4 && lz < hd + 0.4) {
+              hit = true; break;
+            }
+          } else {
+            if (p.x > b.x1 - 0.4 && p.x < b.x2 + 0.4 && p.z > b.z1 - 0.4 && p.z < b.z2 + 0.4) {
+              hit = true; break;
+            }
+          }
         }
         if (hit) break;
       }

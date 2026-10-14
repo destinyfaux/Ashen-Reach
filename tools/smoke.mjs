@@ -242,10 +242,11 @@ try {
     const startX = walker.x;
     let focusPatch = null;
     let crossedX = startX;
-    for (let x = startX; x <= startX + 420 && !focusPatch; x += 45) {
+    for (let x = startX; x <= Math.max(startX + 420, 585) && !focusPatch; x += 45) {
       await sleep(70);
       send(ws1, 'intent:move', { x, z: walker.z, rotY: 0 });
       const batch = await collect(ws1, 'state:patch', 140);
+      console.log('WALK STEP x=', x, 'batch:', JSON.stringify(batch));
       focusPatch = batch.find(p => p.world && p.world.focus && (p.world.focus.rx !== 0 || p.world.focus.rz !== 0));
       crossedX = x;
     }

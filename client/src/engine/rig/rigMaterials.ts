@@ -84,6 +84,20 @@ export function clothMat(color: number): THREE.MeshStandardMaterial {
   }), RIM_WARM, 0.34));
 }
 
+/** hair strands & braids — smooth satin sheen, distinct from woven cloth */
+export function hairMat(color: number): THREE.MeshStandardMaterial {
+  return cached('hair' + hex(color), () => rimify(new THREE.MeshStandardMaterial({
+    color, roughness: 0.78, metalness: 0.12, vertexColors: true,
+  }), RIM_WARM, 0.35));
+}
+
+/** facial warpaint, scars, and runes */
+export function decorMat(color: number): THREE.MeshStandardMaterial {
+  return cached('decor' + hex(color), () => rimify(new THREE.MeshStandardMaterial({
+    color, roughness: 0.65, metalness: 0.08, vertexColors: true,
+  }), RIM_WARM, 0.4));
+}
+
 /** leather / straps / boots / belts */
 export function leatherMat(color = PAL.leather): THREE.MeshStandardMaterial {
   return cached('leather' + hex(color), () => rimify(new THREE.MeshStandardMaterial({

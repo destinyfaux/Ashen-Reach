@@ -79,7 +79,8 @@ function mergeParts(parts: Part[]): THREE.BufferGeometry {
 // shared geometry cache per weapon id (built once, cloned never — meshes share it)
 const geomCache = new Map<string, { geom: THREE.BufferGeometry; tipY: number; glow?: { y: number; color: number } }>();
 
-function weaponGeom(id: string): { geom: THREE.BufferGeometry; tipY: number; glow?: { y: number; color: number } } {
+function weaponGeom(rawId: string): { geom: THREE.BufferGeometry; tipY: number; glow?: { y: number; color: number } } {
+  const id = rawId === 'sword' ? 'longsword' : (rawId === 'battleaxe' || rawId === 'waraxe' ? 'axe' : rawId);
   let w = geomCache.get(id);
   if (w) return w;
   const P: Part[] = [];
@@ -95,6 +96,16 @@ function weaponGeom(id: string): { geom: THREE.BufferGeometry; tipY: number; glo
     boxPart(P, 0, -1.75, 0, 0.11, 2.9, 0.035, C.steel);                    // blade
     boxPart(P, 0, -3.32, 0, 0.062, 0.24, 0.028, C.steel);                  // tapered tip
     tipY = -3.4;
+  } else if (id === 'axe') {
+    // Battleaxe: stout wood haft, leather grip, steel bearded axe head with back poll
+    cylPart(P, 0, -0.4, 0, 0.045, 0.06, 2.7, C.wood);                       // haft
+    boxPart(P, 0, -0.05, 0, 0.075, 0.5, 0.075, C.leather);                  // grip wrap
+    boxPart(P, 0, 0.16, 0, 0.08, 0.08, 0.08, C.darkSteel);                  // butt cap
+    boxPart(P, 0, -1.15, 0, 0.09, 0.14, 0.09, C.gold);                     // collar reinforcement
+    boxPart(P, -0.16, -1.25, 0, 0.16, 0.14, 0.1, C.darkSteel);             // back hammer poll
+    boxPart(P, 0.18, -1.25, 0, 0.26, 0.26, 0.055, C.darkSteel);            // blade body
+    boxPart(P, 0.36, -1.25, 0, 0.22, 0.48, 0.035, C.steel);                // curved crescent edge
+    tipY = -1.6;
   } else if (id === 'dagger') {
     boxPart(P, 0, 0.16, 0, 0.07, 0.06, 0.07, C.darkSteel);
     boxPart(P, 0, 0.02, 0, 0.055, 0.3, 0.055, C.wood);
@@ -140,7 +151,8 @@ function weaponGeom(id: string): { geom: THREE.BufferGeometry; tipY: number; glo
   return w;
 }
 
-function shieldGeom(id: string): THREE.BufferGeometry {
+function shieldGeom(rawId: string): THREE.BufferGeometry {
+  const id = rawId === 'shield' ? 'kite' : rawId;
   const key = 'shield:' + id;
   let g = geomCache.get(key);
   if (g) return g.geom;
@@ -204,50 +216,88 @@ const CLASS_MAP: Record<string, string> = {
   cleric: 'pale_priest', druid: 'pale_priest', bard: 'pale_priest',
 };
 
-/** attach the archetype's equipment to the rig's hand anchors */
+/** Clear any held weapons, shields, or props from the rig's hand anchors */
+export function clearEquipment(rig: HumanoidRig): void {
+  while (rig.equipR.children.length > 0) {
+    const c = rig.equipR.children[0];
+    rig.equipR.remove(c);
+  }
+  while (rig.equipL.children.length > 0) {
+    const c = rig.equipL.children[0];
+    rig.equipL.remove(c);
+  }
+  rig.trailTip = null;
+  rig.trailBase = null;
+}
+
+/** Modularly equip a weapon into main (right) or off (left) hand */
+export function equipWeapon(rig: HumanoidRig, weaponId: string, slot: 'main' | 'off' = 'main'): void {
+  if (!weaponId) return;
+  const parent = slot === 'main' ? rig.equipR : rig.equipL;
+  const mat = cloneMat(metalMat(0xffffff, 0.45, 0.7));
+
+  const main = weaponGeom(weaponId);
+  const mesh = new THREE.Mesh(main.geom, mat);
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;
+  parent.add(mesh);
+
+  if (main.glow) {
+    const s = glowSprite(main.glow.color, 1.0);
+    s.position.set(0, main.glow.y, 0);
+    mesh.add(s);
+  }
+
+  if (slot === 'main' && main.tipY < -0.5) {
+    const tip = new THREE.Object3D(); tip.position.set(0, main.tipY, 0);
+    const base = new THREE.Object3D(); base.position.set(0, main.tipY * 0.4, 0);
+    mesh.add(tip); mesh.add(base);
+    rig.trailTip = tip;
+    rig.trailBase = base;
+  }
+}
+
+/** Modularly equip a shield or off-hand focus onto the left forearm */
+export function equipShield(rig: HumanoidRig, rawShieldId: string = 'kite'): void {
+  const shieldId = rawShieldId === 'shield' ? 'kite' : rawShieldId;
+  const offGeom = shieldGeom(shieldId);
+  const mat = cloneMat(metalMat(0xffffff, 0.45, 0.7));
+  const offMesh = new THREE.Mesh(offGeom, mat);
+  offMesh.castShadow = true;
+  offMesh.frustumCulled = false;
+
+  if (shieldId === 'kite') {
+    offMesh.position.set(0.22, 0.1, 0.05);
+    offMesh.rotation.set(0.1, 0, -0.12);
+  } else if (shieldId === 'tome') {
+    offMesh.position.set(0, -0.34, 0.16);
+    offMesh.rotation.set(-0.5, 0.15, 0);
+  } else if (shieldId === 'reliquary') {
+    offMesh.position.set(0.02, -0.5, 0.1);
+    const s = glowSprite(0x7fd4c8, 0.8);
+    s.position.set(0, -0.66, 0.1);
+    offMesh.add(s);
+  }
+  rig.equipL.add(offMesh);
+}
+
+/** Swap both main-hand and off-hand gear modularly */
+export function setEquipment(rig: HumanoidRig, main?: string | null, off?: string | null): void {
+  clearEquipment(rig);
+  if (main) equipWeapon(rig, main, 'main');
+  if (off) {
+    if (off === 'dagger' || off === 'sword' || off === 'longsword' || off === 'axe') {
+      equipWeapon(rig, off, 'off');
+    } else {
+      equipShield(rig, off);
+    }
+  }
+}
+
+/** attach the archetype's equipment to the rig's hand anchors (used for in-world gameplay) */
 export function buildEquipment(rig: HumanoidRig, archetype: string): void {
   const norm = (archetype || 'warden').toLowerCase();
   const setKey = BASE_SETS[norm] ? norm : (CLASS_MAP[norm] ?? 'warden');
   const set = BASE_SETS[setKey] ?? BASE_SETS.warden;
-  if (!set.main) return;
-  const mat = cloneMat(metalMat(0xffffff, 0.45, 0.7));  // vertex colours carry the hues
-
-  const main = weaponGeom(set.main);
-  const mainMesh = new THREE.Mesh(main.geom, mat);
-  mainMesh.castShadow = true;
-  mainMesh.frustumCulled = false;
-  rig.equipR.add(mainMesh);
-  if (main.glow) {
-    const s = glowSprite(main.glow.color, 1.0);
-    s.position.set(0, main.glow.y, 0);
-    mainMesh.add(s);
-  }
-  if (set.mainTrail && main.tipY < -0.5) {
-    const tip = new THREE.Object3D(); tip.position.set(0, main.tipY, 0);
-    const base = new THREE.Object3D(); base.position.set(0, main.tipY * 0.4, 0);
-    mainMesh.add(tip); mainMesh.add(base);
-    rig.trailTip = tip;
-    rig.trailBase = base;
-  }
-
-  if (set.off) {
-    const offGeom = shieldGeom(set.off);
-    const offMesh = new THREE.Mesh(offGeom, mat);
-    offMesh.castShadow = true;
-    offMesh.frustumCulled = false;
-    if (set.off === 'kite') {
-      // strapped to the left forearm: board faces outward (+X), slight forward cant
-      offMesh.position.set(0.22, 0.1, 0.05);
-      offMesh.rotation.set(0.1, 0, -0.12);
-    } else if (set.off === 'tome') {
-      offMesh.position.set(0, -0.34, 0.16);
-      offMesh.rotation.set(-0.5, 0.15, 0);
-    } else if (set.off === 'reliquary') {
-      offMesh.position.set(0.02, -0.5, 0.1);
-      const s = glowSprite(0x7fd4c8, 0.8);
-      s.position.set(0, -0.66, 0.1);
-      offMesh.add(s);
-    }
-    rig.equipL.add(offMesh);
-  }
+  setEquipment(rig, set.main, set.off);
 }
