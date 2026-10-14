@@ -30,9 +30,8 @@ import { SKIN_TONES, HAIR_COLORS, HAIR_STYLES, EYE_COLORS, CLOAK_COLORS } from '
 
 // ── frozen public API ────────────────────────────────────────────────────────
 export interface CharacterDef {
-  name: string; race: string; class: string; level: number;
-  /** level-1 path (Cleric domain / Sorcerer origin / Warlock patron) — optional,
-   *  only emitted for classes that choose at level 1 */
+  name: string; race: string; subrace?: string; class: string; level: number;
+  /** Chosen subclass path from the SRD database */
   subclass?: string;
   abilities: { str: number; dex: number; con: number; int: number; wis: number; cha: number };
   background: string;
@@ -93,14 +92,12 @@ function createWizard(container: HTMLElement, opts: MountOpts): Active {
   const nextBtn = h('button', { class: 'cr-btn cr-btn-primary', onclick: () => go(1) }, 'NEXT');
 
   function buildDef(): CharacterDef {
-    // subclass only rides along when it belongs to the chosen class
-    const subclass = (SUBCLASSES[state.charClass] || []).some((x) => x.id === state.subclass)
-      ? state.subclass : undefined;
     return {
       name: state.name.trim(),
       race: state.race,
+      ...(state.subrace ? { subrace: state.subrace } : {}),
       class: state.charClass,
-      ...(subclass ? { subclass } : {}),
+      ...(state.subclass ? { subclass: state.subclass } : {}),
       level: 1,
       abilities: { ...state.base } as CharacterDef['abilities'],
       background: state.background,

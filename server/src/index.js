@@ -7,6 +7,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GameManager } from './GameManager.js';
 import { attachWs } from './ws.js';
+import {
+  list_top_level, keys, get, get_race, get_class,
+  get_spell, get_spell_list, get_equipment_stats, get_feat, get_background
+} from './rules/srd.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');           // game/
@@ -88,6 +92,64 @@ const server = http.createServer(async (req, res) => {
         if (!map) return json(res, 404, { error: 'map_not_found' });
         return json(res, 200, gm.getPublicMap(null, mapMatch[1]));
       }
+
+      // ── SRD Database API ──────────────────────────────────────────
+      if (pathname.startsWith('/api/srd')) {
+        const sp = url.searchParams;
+        if (pathname === '/api/srd/top' || pathname === '/api/srd') {
+          return json(res, 200, list_top_level());
+        }
+        if (pathname === '/api/srd/races') {
+          return json(res, 200, keys('/races'));
+        }
+        if (pathname === '/api/srd/classes') {
+          return json(res, 200, keys('/classes'));
+        }
+        if (pathname === '/api/srd/keys') {
+          return json(res, 200, keys(sp.get('path') || '/'));
+        }
+        if (pathname === '/api/srd/get') {
+          const val = get(sp.get('path') || '/');
+          return val !== undefined ? json(res, 200, val) : json(res, 404, { error: 'not_found' });
+        }
+        const raceMatch = pathname.match(/^\/api\/srd\/race\/([^/]+)$/i);
+        if (raceMatch) {
+          const r = get_race(decodeURIComponent(raceMatch[1]), sp.get('subrace') || undefined);
+          return r ? json(res, 200, r) : json(res, 404, { error: 'race_not_found' });
+        }
+        const classMatch = pathname.match(/^\/api\/srd\/class\/([^/]+)$/i);
+        if (classMatch) {
+          const c = get_class(decodeURIComponent(classMatch[1]), sp.get('subclass') || undefined, sp.get('level') || undefined);
+          return c ? json(res, 200, c) : json(res, 404, { error: 'class_not_found' });
+        }
+        if (pathname === '/api/srd/spells') {
+          const cls = sp.get('class');
+          if (!cls) return json(res, 400, { error: 'class_required' });
+          return json(res, 200, get_spell_list(cls, Number(sp.get('level')) || 9));
+        }
+        const spellMatch = pathname.match(/^\/api\/srd\/spell\/([^/]+)$/i);
+        if (spellMatch) {
+          const s = get_spell(decodeURIComponent(spellMatch[1]));
+          return s ? json(res, 200, s) : json(res, 404, { error: 'spell_not_found' });
+        }
+        const eqMatch = pathname.match(/^\/api\/srd\/equipment\/([^/]+)$/i);
+        if (eqMatch) {
+          const e = get_equipment_stats(decodeURIComponent(eqMatch[1]));
+          return e ? json(res, 200, e) : json(res, 404, { error: 'equipment_not_found' });
+        }
+        const featMatch = pathname.match(/^\/api\/srd\/feat\/([^/]+)$/i);
+        if (featMatch) {
+          const f = get_feat(decodeURIComponent(featMatch[1]));
+          return f ? json(res, 200, f) : json(res, 404, { error: 'feat_not_found' });
+        }
+        const bgMatch = pathname.match(/^\/api\/srd\/background\/([^/]+)$/i);
+        if (bgMatch) {
+          const b = get_background(decodeURIComponent(bgMatch[1]));
+          return b ? json(res, 200, b) : json(res, 404, { error: 'background_not_found' });
+        }
+        return json(res, 404, { error: 'srd_not_found' });
+      }
+
       return json(res, 404, { error: 'not_found' });
     }
 

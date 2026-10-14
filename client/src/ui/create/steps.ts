@@ -20,14 +20,20 @@ import {
   CLOAK_COLORS, LookState, BodyType, FaceDecor,
 } from './portrait';
 import type { CharacterDef } from './creation';
+import {
+  fetchSrdRace, fetchSrdClass, getCachedRace, getCachedClass,
+} from './srdClient';
+import type { SrdSubrace, SrdSubclass } from './srdClient';
+import { renderSubclassSelector } from './SubclassSelector';
+import { renderSubraceSelector } from './SubraceSelector';
 
 // ── state ────────────────────────────────────────────────────────────────────
 export type AbilMode = 'pointbuy' | 'roll' | 'pool';
 
 export interface CreateState {
   step: number;                            // GLOBAL step id (index into STEP_META)
-  name: string; race: string; charClass: string;
-  subclass: string;                        // level-1 path ('' until chosen)
+  name: string; race: string; subrace: string; charClass: string;
+  subclass: string;                        // chosen path from the SRD database
   mode: AbilMode;
   base: Record<AbilityKey, number>;
   pool: number[];                          // unassigned values (pool mode)
@@ -50,7 +56,7 @@ export interface StepCtx {
 
 export function defaultState(): CreateState {
   return {
-    step: 0, name: '', race: '', charClass: '', subclass: '',
+    step: 0, name: '', race: '', subrace: '', charClass: '', subclass: '',
     mode: 'pointbuy',
     base: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 },
     pool: [], rolled: false, dice: {},
@@ -59,7 +65,7 @@ export function defaultState(): CreateState {
   };
 }
 
-export const SPEC_STEP = 2;   // the PATH step id — skipped when the class picks at level 3
+export const SPEC_STEP = 2;   // the PATH step id
 export const STEP_META: { id: string; label: string; title: string; sub: string; rune: string }[] = [
   { id: 'origin',  label: 'Origin',  title: 'Name Your Shadow',   sub: 'Every ash-born soul arrives nameless. Choose what the world will whisper.', rune: 'M8 3v18M8 5l8-2M8 11l8-2' },
   { id: 'calling', label: 'Calling', title: 'Choose Your Calling', sub: 'Not a class — a wound, a gift, a burden. Decide how you fight the dark.',    rune: 'M9 21V3M9 3h5q3 2 0 6H9M11 12l5 9' },
@@ -70,12 +76,9 @@ export const STEP_META: { id: string; label: string; title: string; sub: string;
   { id: 'oath',    label: 'Oath',    title: 'Speak the Oath',     sub: 'Read the ledger of your soul. Then step through, and do not look back.',     rune: 'M4 8l16 8M20 8L4 16' },
 ];
 
-/** Visible step ids for the current class — 7 steps when the class chooses its
- *  path at level 1 (Cleric / Sorcerer / Warlock), 6 otherwise. Single source of
- *  truth for the progress runes, next/back navigation and step clamping. */
-export function visibleSteps(state: CreateState): number[] {
-  const spec = hasLevel1Subclass(state.charClass);
-  return STEP_META.map((_, i) => i).filter((i) => i !== SPEC_STEP || spec);
+/** Visible step ids: all 7 steps are enabled so all classes can choose their path from the SRD. */
+export function visibleSteps(_state: CreateState): number[] {
+  return STEP_META.map((_, i) => i);
 }
 export function stepCount(state: CreateState): number { return visibleSteps(state).length; }
 
@@ -167,12 +170,12 @@ const RACE_MARK_FAMILY: Record<string, string> = {
   Dragonborn: 'scale', 'Gem Dragonborn': 'scale', Lizardfolk: 'scale', 'Yuan-ti Pureblood': 'serpent',
   Aarakocra: 'wing', Kenku: 'wing', Firbolg: 'leaf', Genasi: 'element', Plasmoid: 'amorph',
 };
-function raceMark(race: string): SVGSVGElement {
+export function raceMark(race: string): SVGSVGElement {
   const fam = RACE_MARK_FAMILY[race] || 'human';
   return svgEl(RACE_MARKS[fam] || RACE_MARKS.human, { width: '22', height: '22' });
 }
 
-function icon(kind: 'chevL' | 'chevR' | 'download' | 'upload' | 'check' | 'warn' | 'dice' | 'brand' | 'sparkle', size = 16): SVGSVGElement {
+export function icon(kind: 'chevL' | 'chevR' | 'download' | 'upload' | 'check' | 'warn' | 'dice' | 'brand' | 'sparkle', size = 16): SVGSVGElement {
   const paths = {
     chevL: '<path d="M14.5 5.5L8 12l6.5 6.5"/>',
     chevR: '<path d="M9.5 5.5L16 12l-6.5 6.5"/>',
@@ -212,8 +215,8 @@ function panel(title: string, sub: string, ...kids: Child[]) {
 
 function chip(text: string, cls = ''): HTMLElement { return h('span', { class: `cr-chip ${cls}`, text }); }
 
-function asiChips(raceId: string): HTMLElement[] {
-  const asi = racialAsi(raceId);
+function asiChips(raceId: string, subraceName?: string): HTMLElement[] {
+  const asi = racialAsi(raceId, subraceName);
   return ABILITY_KEYS.filter((k) => asi[k] !== 0)
     .map((k) => chip(`${modStr(asi[k])} ${ABILITY_INFO[k].abbr}`, 'gold'));
 }
@@ -258,7 +261,12 @@ function stepOrigin(body: HTMLElement, ctx: StepCtx): void {
   for (const r of RACES) {
     raceGrid.append(h('button', {
       class: `cr-card ${s.race === r.id ? 'sel' : ''}`,
-      onclick: () => ctx.update({ race: r.id }),
+      onclick: () => {
+        ctx.update({ race: r.id, subrace: '' });
+        fetchSrdRace(r.id).then(() => {
+          if (ctx.state.race === r.id) ctx.update({});
+        });
+      },
     },
       h('span', { class: 'cr-card-mark' }, raceMark(r.id)),
       h('span', { class: 'cr-card-name', text: r.id }),
@@ -266,6 +274,10 @@ function stepOrigin(body: HTMLElement, ctx: StepCtx): void {
       h('span', { class: 'cr-card-flavor', text: r.flavor }),
     ));
   }
+
+  // Dynamic SubraceSelector component from SRD database
+  const subraceSection = h('div', { class: 'cr-subrace-wrapper' });
+  renderSubraceSelector(subraceSection, ctx);
 
   const nameHint = h('div', { class: 'cr-error', text: 'A name of at least two letters, ash-born.' });
   nameHint.style.display = 'none';
@@ -277,7 +289,7 @@ function stepOrigin(body: HTMLElement, ctx: StepCtx): void {
         value: s.name,
         oninput: (e: Event) => {
           const v = (e.target as HTMLInputElement).value;
-          ctx.patchSilent({ name: v });          // silent — keeps the caret alive
+          ctx.patchSilent({ name: v });
           nameHint.style.display = v.trim().length < 2 ? '' : 'none';
         },
       }),
@@ -290,19 +302,30 @@ function stepOrigin(body: HTMLElement, ctx: StepCtx): void {
   );
 
   const race = RACES.find((r) => r.id === s.race);
+  const cachedSrd = s.race ? getCachedRace(s.race) : null;
+  const chosenSub = cachedSrd?.subraces_list?.find(
+    sub => s.subrace ? sub.name.toLowerCase() === s.subrace.toLowerCase() : true
+  );
+
   const aside = race
     ? panel(race.id.toUpperCase(), race.flavor,
         h('div', { class: 'cr-chiprow' },
           chip(`${race.speed} ft speed`), chip(race.size),
           race.darkvision ? chip(`Darkvision ${race.darkvision} ft`) : null,
           ...race.languages.map((l) => chip(l)),
-          race.subrace ? chip(`Lineage: ${race.subrace.name}`, 'gold') : null),
-        race.traits.length
+          chosenSub ? chip(`Lineage: ${chosenSub.name}`, 'gold') : (race.subrace ? chip(`Lineage: ${race.subrace.name}`, 'gold') : null)),
+        h('div', { class: 'cr-block' },
+          h('div', { class: 'cr-block-title', text: 'Ability Score Increases' }),
+          h('div', { class: 'cr-chiprow' }, ...asiChips(race.id, chosenSub?.name))),
+        (race.traits.length || (chosenSub?.traits && chosenSub.traits.length))
           ? h('div', { class: 'cr-traitlist' },
               ...race.traits.map((t) => h('div', { class: 'cr-trait' },
                 h('div', { class: 'cr-trait-name', text: t.name }),
-                h('div', { class: 'cr-trait-desc', text: t.desc }))))
-          : h('div', { class: 'cr-panel-empty', text: 'This bloodline carries its gifts by lineage — the details arrive with your subrace at the table.' }))
+                h('div', { class: 'cr-trait-desc', text: t.desc }))),
+              ...(chosenSub?.traits || []).map((t) => h('div', { class: 'cr-trait' },
+                h('div', { class: 'cr-trait-name', text: `${chosenSub?.name || 'Lineage'}: ${t.name}` }),
+                h('div', { class: 'cr-trait-desc', text: t.description || '' }))))
+          : h('div', { class: 'cr-panel-empty', text: 'This bloodline carries its gifts by lineage.' }))
     : panel('CHOOSE A BLOODLINE', 'Every race remembers the Ashenreach differently.',
         h('div', { class: 'cr-panel-empty', text: 'Select a race to read its grim inheritance — ability bonuses, traits, and the speed of its blood.' }));
 
@@ -311,7 +334,8 @@ function stepOrigin(body: HTMLElement, ctx: StepCtx): void {
       h('div', { class: 'cr-main' },
         nameRow,
         h('div', { class: 'cr-label', text: 'Bloodline' }),
-        raceGrid),
+        raceGrid,
+        subraceSection),
       h('div', { class: 'cr-aside' }, aside)));
 }
 
@@ -324,7 +348,12 @@ function stepCalling(body: HTMLElement, ctx: StepCtx): void {
   for (const c of CLASSES) {
     grid.append(h('button', {
       class: `cr-card cr-class-card ${s.charClass === c.id ? 'sel' : ''}`,
-      onclick: () => ctx.update({ charClass: c.id, subclass: '', equipChoices: {} }),
+      onclick: () => {
+        ctx.update({ charClass: c.id, subclass: '', equipChoices: {} });
+        fetchSrdClass(c.id).then(() => {
+          if (ctx.state.charClass === c.id) ctx.update({});
+        });
+      },
     },
       h('span', { class: 'cr-card-mark sigil' }, classSigil(c.sigil, 34)),
       h('span', { class: 'cr-card-name', text: c.id }),
@@ -342,7 +371,7 @@ function stepCalling(body: HTMLElement, ctx: StepCtx): void {
           chip(`Primary: ${c.primary.join(' / ')}`),
           chip(`Saves: ${c.saves.join(', ')}`),
           c.skills ? chip(`${c.skills.count} skills of choice`) : null,
-          hasLevel1Subclass(c.id) ? chip('path chosen next', 'gold') : chip('path at level 3')),
+          chip('path chosen next', 'gold')),
         h('div', { class: 'cr-block' },
           h('div', { class: 'cr-block-title', text: 'Proficiencies' }),
           c.armor.length ? h('div', { class: 'cr-kv' }, h('b', { text: 'Armor' }), h('span', { text: c.armor.join(', ') })) : null,
@@ -354,9 +383,6 @@ function stepCalling(body: HTMLElement, ctx: StepCtx): void {
             h('div', { class: 'cr-trait-name', text: f.name }),
             h('div', { class: 'cr-trait-desc', text: f.desc })))),
         c.spellNote ? h('div', { class: 'cr-spellnote' }, icon('sparkle'), h('span', { text: `${c.spellAbility} spellcasting — ${c.spellNote}` })) : null,
-        !hasLevel1Subclass(c.id)
-          ? h('div', { class: 'cr-hint', text: 'Your path (subclass) is chosen at 3rd level — the forge records it then.' })
-          : null,
       )
     : panel('CHOOSE A CALLING', 'Steel, shadow, or something older.',
         h('div', { class: 'cr-panel-empty', text: 'Select a class to study its hit die, proficiencies, and first-flame features.' }));
@@ -365,51 +391,10 @@ function stepCalling(body: HTMLElement, ctx: StepCtx): void {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// STEP 2 — PATH (subclass — only classes that choose at level 1)
+// STEP 2 — PATH (SubclassSelector — dynamic fetch from SRD database)
 // ═════════════════════════════════════════════════════════════════════════════
 function stepSpec(body: HTMLElement, ctx: StepCtx): void {
-  const s = ctx.state;
-  const subs = SUBCLASSES[s.charClass] || [];
-  const cls = CLASSES.find((x) => x.id === s.charClass);
-
-  if (!subs.length) {
-    // defensive: the step is skipped for these classes (visibleSteps), but if
-    // state lands here (bad import, class swap) show the fork note, not a crash
-    body.append(h('div', { class: 'cr-cols' },
-      h('div', { class: 'cr-main' },
-        panel('THE PATH FORKS AT 3RD LEVEL',
-          cls ? `${cls.flavor} Your specialization is chosen at 3rd level, when the wound has scarred over.` : '',
-          h('div', { class: 'cr-panel-empty', text: 'Nothing to choose here yet — step onward.' })))));
-    return;
-  }
-
-  const grid = h('div', { class: 'cr-cards cr-sub-grid' });
-  for (const sub of subs) {
-    grid.append(h('button', {
-      class: `cr-card cr-sub-card ${s.subclass === sub.id ? 'sel' : ''}`,
-      onclick: () => ctx.update({ subclass: sub.id }),
-    },
-      h('span', { class: 'cr-card-mark sigil' }, classSigil(cls ? cls.sigil : 'spark', 30)),
-      h('span', { class: 'cr-card-name', text: sub.name }),
-      h('span', { class: 'cr-card-meta' }, chip(sub.feature.name, 'gold')),
-      h('span', { class: 'cr-card-flavor', text: sub.flavor }),
-    ));
-  }
-
-  const sel = subs.find((x) => x.id === s.subclass);
-  const aside = sel
-    ? panel(sel.name.toUpperCase(), sel.flavor,
-        h('div', { class: 'cr-chiprow' },
-          chip(`${s.charClass} path`, 'gold'), chip(sel.feature.name)),
-        h('div', { class: 'cr-trait' },
-          h('div', { class: 'cr-trait-name', text: `Level 1 — ${sel.feature.name}` }),
-          h('div', { class: 'cr-trait-desc', text: sel.feature.desc })),
-        h('div', { class: 'cr-hint', text: 'The forge sends your path with the character sheet; the wider powers awaken as you level.' }),
-      )
-    : panel('CHOOSE A PATH', 'The first fork of the calling.',
-        h('div', { class: 'cr-panel-empty', text: 'Each path grants a different first gift. Study them before you swear.' }));
-
-  body.append(h('div', { class: 'cr-cols' }, h('div', { class: 'cr-main' }, grid), h('div', { class: 'cr-aside' }, aside)));
+  renderSubclassSelector(body, ctx);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -418,8 +403,8 @@ function stepSpec(body: HTMLElement, ctx: StepCtx): void {
 function stepFate(body: HTMLElement, ctx: StepCtx): void {
   const s = ctx.state;
   const race = s.race || 'Human';
-  const asi = racialAsi(race);
-  const fin = finalScores(s.base, race);
+  const asi = racialAsi(race, s.subrace);
+  const fin = finalScores(s.base, race, s.subrace);
   const cls = CLASSES.find((c) => c.id === s.charClass);
 
   const tabs = h('div', { class: 'cr-tabs' },
@@ -768,11 +753,26 @@ function expandPack(optionText: string): HTMLElement | null {
 // ═════════════════════════════════════════════════════════════════════════════
 function stepOath(body: HTMLElement, ctx: StepCtx): void {
   const s = ctx.state;
-  const fin = finalScores(s.base, s.race || 'Human');
+  const fin = finalScores(s.base, s.race || 'Human', s.subrace);
   const cls = CLASSES.find((c) => c.id === s.charClass);
   const race = RACES.find((r) => r.id === s.race);
   const bg = BACKGROUNDS.find((b) => b.id === s.background);
-  const sub = (SUBCLASSES[s.charClass] || []).find((x) => x.id === s.subclass) || null;
+
+  // Look up SRD subclass
+  const cachedCls = getCachedClass(s.charClass);
+  const srdSub = cachedCls?.subclasses_list?.find(
+    (x) => s.subclass && x.name.toLowerCase() === s.subclass.toLowerCase()
+  );
+  const legacySub = (SUBCLASSES[s.charClass] || []).find((x) => x.id === s.subclass) || null;
+  const subName = srdSub?.name || legacySub?.name || s.subclass;
+
+  // Look up SRD subrace
+  const cachedRace = getCachedRace(s.race);
+  const srdSubrace = cachedRace?.subraces_list?.find(
+    (x) => s.subrace && x.name.toLowerCase() === s.subrace.toLowerCase()
+  );
+  const subraceName = srdSubrace?.name || s.subrace;
+
   const equipTexts = chosenEquipTexts(s);
 
   const lookChips = [
@@ -787,7 +787,7 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
   const sheet = h('div', { class: 'cr-sheet' },
     h('div', { class: 'cr-sheet-head' },
       h('div', { class: 'cr-sheet-name', text: s.name.trim() || 'The Nameless' }),
-      h('div', { class: 'cr-sheet-sub', text: `Level 1 ${s.race || '—'} ${s.charClass || '—'}${sub ? ` · ${sub.name}` : ''} · ${s.background || '—'}` })),
+      h('div', { class: 'cr-sheet-sub', text: `Level 1 ${subraceName || s.race || '—'} ${s.charClass || '—'}${subName ? ` · ${subName}` : ''} · ${s.background || '—'}` })),
     h('div', { class: 'cr-sheet-abil' },
       ...ABILITY_KEYS.map((k) => h('div', { class: 'cr-sheet-abil-cell' },
         h('div', { class: 'cr-sheet-abbr', text: ABILITY_INFO[k].abbr }),
@@ -797,7 +797,7 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
       h('div', { class: 'cr-stat' }, h('div', { class: 'cr-stat-num', text: String(cls ? previewHP(cls.id, fin.con) : '·') }), h('div', { class: 'cr-stat-label', text: 'Hit Points' })),
       h('div', { class: 'cr-stat' }, h('div', { class: 'cr-stat-num', text: String(cls ? previewAC(cls.id, equipTexts, fin.dex, fin.con, fin.wis) : '·') }), h('div', { class: 'cr-stat-label', text: 'Armor Class' })),
       h('div', { class: 'cr-stat' }, h('div', { class: 'cr-stat-num', text: modStr(abilityMod(fin.dex)) }), h('div', { class: 'cr-stat-label', text: 'Initiative' })),
-      h('div', { class: 'cr-stat' }, h('div', { class: 'cr-stat-num', text: `${race?.speed ?? 30} ft` }), h('div', { class: 'cr-stat-label', text: 'Speed' })),
+      h('div', { class: 'cr-stat' }, h('div', { class: 'cr-stat-num', text: `${cachedRace?.speed ?? race?.speed ?? 30} ft` }), h('div', { class: 'cr-stat-label', text: 'Speed' })),
       h('div', { class: 'cr-stat' }, h('div', { class: 'cr-stat-num', text: '+2' }), h('div', { class: 'cr-stat-label', text: 'Proficiency' })),
       ...(cls?.spellAbility ? (() => {
         const key = cls.spellAbility.slice(0, 3).toLowerCase() as AbilityKey;
@@ -816,9 +816,13 @@ function stepOath(body: HTMLElement, ctx: StepCtx): void {
     cls ? h('div', { class: 'cr-block' },
       h('div', { class: 'cr-block-title', text: 'Features at Level 1' }),
       h('div', { class: 'cr-chiprow' }, ...cls.features.map((f) => chip(f.name, 'gold'))),
-      sub ? h('div', { class: 'cr-chiprow' }, chip(`${sub.feature.name} (${sub.name})`, 'gold')) : null,
+      srdSub?.features?.[0]
+        ? h('div', { class: 'cr-chiprow' }, chip(`${srdSub.features[0].name} (${subName})`, 'gold'))
+        : (legacySub ? h('div', { class: 'cr-chiprow' }, chip(`${legacySub.feature.name} (${subName})`, 'gold')) : null),
       bg ? h('div', { class: 'cr-chiprow' }, chip(`${bg.feature.name} (${bg.id})`)) : null,
-      race ? h('div', { class: 'cr-chiprow' }, ...race.traits.map((t) => chip(t.name))) : null) : null,
+      srdSubrace?.traits?.length
+        ? h('div', { class: 'cr-chiprow' }, ...srdSubrace.traits.map((t) => chip(`${subraceName}: ${t.name}`)))
+        : (race ? h('div', { class: 'cr-chiprow' }, ...race.traits.map((t) => chip(t.name))) : null)) : null,
     h('div', { class: 'cr-block' },
       h('div', { class: 'cr-block-title', text: 'Kit & Keepsakes' }),
       h('ul', { class: 'cr-equip-list review' },
@@ -861,7 +865,7 @@ export function renderStepBody(body: HTMLElement, ctx: StepCtx): void {
   switch (ctx.state.step) {
     case 0: stepOrigin(body, ctx); break;
     case 1: stepCalling(body, ctx); break;
-    case 2: stepSpec(body, ctx); break;      // PATH — only reachable for level-1 choosers
+    case 2: stepSpec(body, ctx); break;      // PATH — dynamic subclass selection from SRD
     case 3: stepFate(body, ctx); break;
     case 4: stepVisage(body, ctx); break;
     case 5: stepPast(body, ctx); break;
@@ -878,9 +882,13 @@ export function stepValid(state: CreateState): { ok: boolean; hint: string } {
       return { ok: true, hint: '' };
     case 1:
       return state.charClass ? { ok: true, hint: '' } : { ok: false, hint: 'Choose a calling.' };
-    case 2:                                       // PATH (only visible for level-1 choosers)
-      if (!hasLevel1Subclass(state.charClass)) return { ok: true, hint: '' };
-      return state.subclass ? { ok: true, hint: '' } : { ok: false, hint: 'Choose your path.' };
+    case 2: {
+      const cached = getCachedClass(state.charClass);
+      if (cached && cached.subclasses_list && cached.subclasses_list.length > 0) {
+        return state.subclass ? { ok: true, hint: '' } : { ok: false, hint: 'Choose your specialization path.' };
+      }
+      return { ok: true, hint: '' };
+    }
     case 3: {
       if (state.mode === 'pointbuy') {
         const left = POINT_BUY_TOTAL - pointBuySpent(state.base);

@@ -111,19 +111,13 @@ function resolveBackground(bg) {
   return null;
 }
 
-// Classes that choose their subclass at level 1 (SRD). Every other class picks
-// at level 3 — def.subclass is silently ignored for them, and unknown values
-// never throw (the buildCharacter never-throws contract).
-const LEVEL1_SUBCLASS_CLASSES = new Set(['Cleric', 'Sorcerer', 'Warlock']);
-
-/** Resolve def.subclass against SRD.classes[className].subclasses for a
- *  level-1 chooser class. Accepts the SRD display name / the creation-wizard
- *  id ("Life Domain" — the wizard's ids ARE the display names), any casing,
- *  slug forms ("life_domain"), the article-stripped name ("fiend" → "The
- *  Fiend") and unique word-prefixes ("life" → "Life Domain"). Returns the
- *  canonical SRD key or null (never throws). */
+/** Resolve def.subclass against SRD.classes[className].subclasses for any
+ *  class. Accepts the SRD display name / the creation-wizard id ("Life Domain",
+ *  "Champion", "Evocation"), any casing, slug forms ("life_domain", "battle_master"),
+ *  the article-stripped name ("fiend" → "The Fiend") and unique word-prefixes.
+ *  Returns the canonical SRD key or null (never throws). */
 function resolveSubclass(className, sub) {
-  if (!sub || !LEVEL1_SUBCLASS_CLASSES.has(className)) return null;
+  if (!sub) return null;
   const subs = SRD.classes[className]?.subclasses;
   if (!subs) return null;
   const keys = Object.keys(subs);            // own keys only (no prototype hits)
@@ -146,6 +140,20 @@ function resolveSubclass(className, sub) {
     return ks.startsWith(stripped + '_') || stripped.startsWith(ks + '_');
   });
   return cands.length === 1 ? cands[0] : null;
+}
+
+function resolveSubrace(race, sub) {
+  if (!race?.subraces) return null;
+  const keys = Object.keys(race.subraces);
+  if (!keys.length) return null;
+  if (!sub) return keys[0] || null;
+  const raw = String(sub).trim();
+  let hit = keys.find(k => k === raw || k.toLowerCase() === raw.toLowerCase());
+  if (hit) return hit;
+  const norm = slug(raw);
+  hit = keys.find(k => slug(k) === norm);
+  if (hit) return hit;
+  return keys[0] || null;
 }
 
 /** Level-gated subclass feature entries (source: 'subclass') for a resolved
@@ -437,7 +445,7 @@ export function buildCharacter(def = {}) {
     }
   };
   applyBonuses(race.ability_score_increase);
-  const subraceName = def.subrace && race.subraces?.[def.subrace] ? def.subrace : Object.keys(race.subraces || {})[0] || null;
+  const subraceName = resolveSubrace(race, def.subrace);
   const subrace = subraceName ? race.subraces[subraceName] : null;
   if (subrace) applyBonuses(subrace.ability_score_increase);
 

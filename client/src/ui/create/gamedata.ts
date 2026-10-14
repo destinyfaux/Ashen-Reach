@@ -25,6 +25,8 @@
 //   currently strips it before buildCharacter (ignored, not an error).
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { getCachedRace } from './srdClient';
+
 export type AbilityKey = 'str' | 'dex' | 'con' | 'int' | 'wis' | 'cha';
 export const ABILITY_KEYS: AbilityKey[] = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
@@ -926,15 +928,38 @@ export function roll4d6(): { dice: number[]; total: number } {
 }
 
 /** Racial ability bonuses for a race id, filled to all six keys (0 where none).
- *  Folds in the auto-picked first subrace (server house rule) so the preview
- *  equals CharacterEngine's sheet — e.g. Dwarf gets CON+2 AND Hill Dwarf WIS+1. */
-export function racialAsi(raceId: string): Record<AbilityKey, number> {
+ *  Folds in the chosen subrace (from SRD cache or auto-picked first subrace). */
+export function racialAsi(raceId: string, subraceName?: string): Record<AbilityKey, number> {
   const r = RACE_MAP[raceId];
   const out = { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 };
   if (!r) return out;
-  for (const src of [r.asi, r.subrace?.asi]) {
-    if (!src) continue;
-    for (const [k, v] of Object.entries(src)) {
+  if (r.asi) {
+    for (const [k, v] of Object.entries(r.asi)) {
+      const key = k.toLowerCase() as AbilityKey;
+      if (key in out) out[key] += v;
+    }
+  }
+
+  // Check if subrace is found in SRD database cache
+  if (subraceName) {
+    const cached = getCachedRace(raceId);
+    if (cached && cached.subraces_list) {
+      const sub = cached.subraces_list.find(
+        (s) => s.name.toLowerCase() === subraceName.toLowerCase()
+      );
+      if (sub && sub.ability_score_increase) {
+        for (const [k, v] of Object.entries(sub.ability_score_increase)) {
+          const key = k.toLowerCase() as AbilityKey;
+          if (key in out) out[key] += v;
+        }
+        return out;
+      }
+    }
+  }
+
+  // Fallback to auto-picked first subrace if none or matching
+  if (r.subrace?.asi && (!subraceName || subraceName.toLowerCase() === r.subrace.name.toLowerCase())) {
+    for (const [k, v] of Object.entries(r.subrace.asi)) {
       const key = k.toLowerCase() as AbilityKey;
       if (key in out) out[key] += v;
     }
@@ -942,9 +967,9 @@ export function racialAsi(raceId: string): Record<AbilityKey, number> {
   return out;
 }
 
-/** Apply racial ASI (incl. auto subrace) to base scores → final scores. */
-export function finalScores(base: Record<AbilityKey, number>, raceId: string): Record<AbilityKey, number> {
-  const asi = racialAsi(raceId);
+/** Apply racial ASI (incl. auto/chosen subrace) to base scores → final scores. */
+export function finalScores(base: Record<AbilityKey, number>, raceId: string, subraceName?: string): Record<AbilityKey, number> {
+  const asi = racialAsi(raceId, subraceName);
   const out = { ...base };
   for (const k of ABILITY_KEYS) out[k] = base[k] + asi[k];
   return out;

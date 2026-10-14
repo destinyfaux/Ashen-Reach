@@ -1,0 +1,4 @@
+node_modules/
+client/public/app.js
+client/public/app.js.map
+*.log

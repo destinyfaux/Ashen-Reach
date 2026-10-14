@@ -261,3 +261,42 @@ test('equipping inventory updates armor class, shield state, and weapon loadout'
   assert.equal(s.inventory.find(i => i.name === 'Crossbow, Light').equipped, true);
   assert.equal(toggleEquipment(s, 'Dungeoneer\'s Pack').reason, 'not_equippable');
 });
+
+test('subrace selection applies custom ASI and traits', () => {
+  const hill = buildCharacter({
+    name: 'Durin', race: 'Dwarf', subrace: 'Hill Dwarf', class: 'Fighter',
+    abilities: { str: 14, dex: 10, con: 14, int: 10, wis: 14, cha: 10 }
+  });
+  assert.equal(hill.subrace, 'Hill Dwarf');
+  assert.equal(hill.abilities.con, 16); // +2 dwarf
+  assert.equal(hill.abilities.wis, 15); // +1 hill dwarf
+  assert.equal(hill.abilities.str, 14); // no str bonus
+
+  const mountain = buildCharacter({
+    name: 'Balin', race: 'Dwarf', subrace: 'Mountain Dwarf', class: 'Fighter',
+    abilities: { str: 14, dex: 10, con: 14, int: 10, wis: 14, cha: 10 }
+  });
+  assert.equal(mountain.subrace, 'Mountain Dwarf');
+  assert.equal(mountain.abilities.con, 16); // +2 dwarf
+  assert.equal(mountain.abilities.str, 16); // +2 mountain dwarf
+  assert.equal(mountain.abilities.wis, 14); // no wis bonus
+  assert.ok(mountain.traits.some(t => t.name === 'Dwarven Armor Training'));
+});
+
+test('subclasses can be selected for all classes', () => {
+  const champion = buildCharacter({
+    name: 'Roland', race: 'Human', class: 'Fighter', subclass: 'Champion', level: 3,
+    abilities: { str: 16, dex: 14, con: 14, int: 10, wis: 12, cha: 10 }
+  });
+  assert.equal(champion.subclass, 'Champion');
+  assert.ok(champion.features.some(f => f.name === 'Improved Critical' && f.source === 'subclass'));
+
+  const evoker = buildCharacter({
+    name: 'Kael', race: 'Elf', subrace: 'High Elf', class: 'Wizard', subclass: 'School of Evocation', level: 2,
+    abilities: { str: 8, dex: 14, con: 14, int: 16, wis: 12, cha: 10 }
+  });
+  assert.equal(evoker.subrace, 'High Elf');
+  assert.equal(evoker.subclass, 'School of Evocation');
+  assert.ok(evoker.features.some(f => f.name === 'Evocation Savant' && f.source === 'subclass'));
+  assert.ok(evoker.features.some(f => f.name === 'Sculpt Spells' && f.source === 'subclass'));
+});
