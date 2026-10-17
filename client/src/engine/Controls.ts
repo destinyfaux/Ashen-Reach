@@ -156,11 +156,14 @@ export class Controls {
       this.jumpVelocity = 0;
       a.group.position.y = this.eng.grid.terrainHeightAt(a.group.position.x, a.group.position.z);
     } else {
-      if (this.jumpRequested && !uiBlocked && this.jumpHeight === 0) this.jumpVelocity = 7.2;
+      // Quick win: jump feel. Old 7.2/18 gave a 1.4 ft hop that read as broken;
+      // 12.4/23 arcs ~3.3 ft (about knee-to-waist on a 5 ft cell) with a snappy
+      // 0.54 s rise and ~1.1 s total airtime.
+      if (this.jumpRequested && !uiBlocked && this.jumpHeight === 0) this.jumpVelocity = 12.4;
       this.jumpRequested = false;
       if (this.jumpHeight > 0 || this.jumpVelocity > 0) {
         this.jumpHeight = Math.max(0, this.jumpHeight + this.jumpVelocity * dt);
-        this.jumpVelocity -= 18 * dt;
+        this.jumpVelocity -= 23 * dt;
         if (this.jumpHeight === 0) this.jumpVelocity = 0;
       }
       a.group.position.y = this.eng.grid.terrainHeightAt(a.group.position.x, a.group.position.z) + this.jumpHeight;
@@ -199,14 +202,20 @@ export class Controls {
         const dz = -mvx * Math.sin(yaw) + mvz * Math.cos(yaw);
         const sprint = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
         const sp = sprint ? SPRINT_FT : WALK_FT;
+        // Server meters combat movement in true feet (arc length). Clamp the
+        // predicted step to the remaining budget so the figure glides to a stop
+        // at the limit instead of overshooting into a reject-snap correction.
+        const budgetFt = combatActive && movement?.tokenId === this.tokenId && Number.isFinite(remaining)
+          ? remaining : Infinity;
+        const step = Math.min(sp * dt, budgetFt);
         const px = a.group.position.x, pz = a.group.position.z;
         // Resolve axes separately so a blocked diagonal doesn't cancel the
         // unblocked component and make movement catch at wall corners.
-        let [nx, nz] = this.eng.grid.resolve(px + dx * sp * dt, pz, 1.2);
+        let [nx, nz] = this.eng.grid.resolve(px + dx * step, pz, 1.2);
         if (!this.eng.grid.isOpenWorld(nx, pz) && this.eng.grid.isOpenWorld(px, pz)) {
           nx = px;
         }
-        [nx, nz] = this.eng.grid.resolve(nx, pz + dz * sp * dt, 1.2);
+        [nx, nz] = this.eng.grid.resolve(nx, pz + dz * step, 1.2);
         if (!this.eng.grid.isOpenWorld(nx, nz)) {
           if (this.eng.grid.isOpenWorld(nx, pz)) {
             nz = pz;

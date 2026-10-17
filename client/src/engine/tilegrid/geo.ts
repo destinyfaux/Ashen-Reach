@@ -189,163 +189,75 @@ export function mergeGeometries(grid: TileGrid, geos: THREE.BufferGeometry[]): T
   return merged;
 }
 
-// Meadow wildflower: thin crossed stem quads, two ground leaves, and a flat
-// radial petal head that reads as a daisy / buttercup / violet from the game's
-// high camera. Vertex-colored so it can ride the instanced grass wind material
-// (petal colors stay distinct even though instance colors vary the tint).
-export function makeMeadowFlowerGeometry(
-  grid: TileGrid,
-  petal: [number, number, number],
-  center: [number, number, number],
-  height: number,
-  headR: number,
-  petalCount: number,
-): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const indices: number[] = [];
-  const quad = (
-    ax: number, ay: number, az: number, bx: number, by: number, bz: number,
-    cx: number, cy: number, cz: number, dx: number, dy: number, dz: number,
-    r: number, g: number, b: number,
-  ) => {
-    const offset = positions.length / 3;
-    positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
-    for (let i = 0; i < 4; i++) colors.push(r, g, b);
-    indices.push(offset, offset + 1, offset + 2, offset, offset + 2, offset + 3);
-  };
-  // stem: two crossed narrow quads so it survives every camera angle
-  const sw = 0.028;
-  for (const rot of [0, Math.PI / 2]) {
-    const ox = Math.cos(rot) * sw, oz = Math.sin(rot) * sw;
-    quad(-ox, 0, -oz, ox, 0, oz, ox, height * 0.66, oz, -ox, height * 0.66, -oz, 0.22, 0.40, 0.18);
-  }
-  // two small ground leaves
-  quad(-0.11, 0.015, -0.03, 0.05, 0.015, 0.05, 0.13, 0.05, 0.0, -0.03, 0.05, -0.08, 0.20, 0.38, 0.17);
-  quad(0.10, 0.02, 0.09, -0.04, 0.02, -0.11, -0.12, 0.055, -0.04, 0.02, 0.055, 0.12, 0.22, 0.42, 0.19);
-  // flat radial petal head, petals slightly cupped upward with gaps between
-  // them so the silhouette reads as distinct petals, not a solid disc
-  const hy = height;
-  for (let pI = 0; pI < petalCount; pI++) {
-    const a = (pI / petalCount) * Math.PI * 2;
-    const a2 = a + (Math.PI * 2 / petalCount) * 0.52;
-    const rIn = headR * 0.30, rOut = headR;
-    const lift = headR * 0.38;
-    quad(
-      Math.cos(a) * rIn, hy, Math.sin(a) * rIn,
-      Math.cos(a2) * rIn, hy, Math.sin(a2) * rIn,
-      Math.cos(a2) * rOut, hy + lift, Math.sin(a2) * rOut,
-      Math.cos(a) * rOut, hy + lift, Math.sin(a) * rOut,
-      petal[0], petal[1], petal[2],
-    );
-  }
-  // center disc floating just above the petal ring
-  const cR = headR * 0.34, cY = hy + headR * 0.30;
-  quad(-cR, cY, -cR, cR, cY, -cR, cR, cY, cR, -cR, cY, cR, center[0], center[1], center[2]);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
+export function makeTwigGeometry(grid: TileGrid): THREE.BufferGeometry {
+  const mainStem = new THREE.CylinderGeometry(0.045, 0.08, 1.8, 5);
+  mainStem.rotateZ(Math.PI / 2);
+  mainStem.rotateY(0.25);
+  mainStem.translate(0, 0.04, 0);
 
-// Low meadow shrub: 3-5 lumpy squashed leaf-blobs welded into one clump,
-// vertex-shaded dark at the soil line to olive at the tips. Rides the
-// instanced grass wind material — its low profile keeps the sway subtle.
-export function makeShrubGeometry(grid: TileGrid): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  // [offsetX, offsetY, offsetZ, radius] — detail-1 center dome, detail-0 lobes
-  const blobs: [number, number, number, number, number][] = [
-    [0, 0.34, 0, 0.52, 1],
-    [0.34, 0.26, 0.18, 0.36, 0],
-    [-0.30, 0.24, 0.22, 0.34, 0],
-    [0.05, 0.22, -0.34, 0.38, 0],
-    [-0.22, 0.20, -0.26, 0.30, 0],
-  ];
-  for (let i = 0; i < blobs.length; i++) {
-    const [bx, by, bz, br, detail] = blobs[i];
-    const blob = new THREE.IcosahedronGeometry(br, detail);
-    const pos = blob.attributes.position;
-    for (let vI = 0; vI < pos.count; vI++) {
-      const vx = pos.getX(vI), vy = pos.getY(vI), vz = pos.getZ(vI);
-      // leafy irregularity — welded (pure position function, no cracks)
-      const lump = Math.sin(vx * 7.3 + by * 11.0 + i * 2.1) * Math.cos(vz * 6.7 + vy * 5.3 + i) * 0.14;
-      pos.setXYZ(vI, vx * (1 + lump) + bx, Math.max(0.015, vy * (1 + lump) * 0.72 + by), vz * (1 + lump) + bz);
-    }
-    const arr = new Float32Array(pos.count * 3);
-    const toneJit = (i % 3) * 0.02;
-    for (let vI = 0; vI < pos.count; vI++) {
-      const t = Math.min(1, Math.max(0, pos.getY(vI) / (by + br * 0.7)));
-      arr[vI * 3] = 0.15 + t * 0.21 + toneJit;
-      arr[vI * 3 + 1] = 0.27 + t * 0.25 + toneJit;
-      arr[vI * 3 + 2] = 0.12 + t * 0.11;
-    }
-    blob.setAttribute('color', new THREE.BufferAttribute(arr, 3));
-    blob.computeVertexNormals();
-    parts.push(blob);
-  }
-  const merged = mergeGeometries(grid, parts);
-  parts.forEach((p) => p.dispose());
+  const fork1 = new THREE.CylinderGeometry(0.025, 0.045, 0.85, 4);
+  fork1.rotateZ(Math.PI / 2 + 0.65);
+  fork1.rotateY(-0.4);
+  fork1.translate(0.25, 0.03, 0.22);
+
+  const fork2 = new THREE.CylinderGeometry(0.02, 0.035, 0.6, 4);
+  fork2.rotateZ(Math.PI / 2 - 0.55);
+  fork2.rotateY(0.35);
+  fork2.translate(-0.35, 0.03, -0.16);
+
+  const merged = mergeGeometries(grid, [mainStem, fork1, fork2]);
+  mainStem.dispose();
+  fork1.dispose();
+  fork2.dispose();
   return merged;
 }
 
-export function makeFernGeometry(grid: TileGrid): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const colors: number[] = [];
-  const indices: number[] = [];
-
-  const frondCount = 7;
-  for (let f = 0; f < frondCount; f++) {
-    const angle = (f / frondCount) * Math.PI * 2 + (f % 2 ? 0.16 : -0.16);
-    const cosA = Math.cos(angle), sinA = Math.sin(angle);
-    const perpX = -sinA, perpZ = cosA;
-    const length = 1.15 + (f % 3) * 0.18;
-    const segs = 4;
-
-    for (let s = 0; s <= segs; s++) {
-      const t = s / segs;
-      const y = Math.sin(t * Math.PI * 0.85) * 0.36 * (1.0 - t * 0.35);
-      const r = t * length;
-      const cx = cosA * r, cz = sinA * r;
-      const w = (s === 0 ? 0.05 : s === segs ? 0.02 : 0.28 * Math.sin(t * Math.PI)) * 0.5;
-
-      const baseIdx = positions.length / 3;
-      positions.push(
-        cx - perpX * w, y, cz - perpZ * w,
-        cx + perpX * w, y, cz + perpZ * w,
-      );
-      normals.push(0, 1, 0, 0, 1, 0);
-
-      const gTone = 0.40 + t * 0.24;
-      colors.push(
-        0.16, gTone, 0.12,
-        0.16, gTone, 0.12,
-      );
-
-      if (s > 0) {
-        const prev = baseIdx - 2;
-        indices.push(
-          prev, prev + 1, baseIdx,
-          prev + 1, baseIdx + 1, baseIdx,
-        );
-      }
-    }
+export function makeSnowDriftGeometry(grid: TileGrid): THREE.BufferGeometry {
+  const geo = new THREE.SphereGeometry(1.2, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  geo.scale(1.4, 0.28, 0.95);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const vx = pos.getX(i);
+    let vy = pos.getY(i);
+    const vz = pos.getZ(i);
+    vy += Math.sin(vx * 1.5 + vz * 0.8) * 0.06;
+    pos.setXYZ(i, vx, Math.max(0.02, vy), vz);
   }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geo.setIndex(indices);
+  pos.needsUpdate = true;
   geo.computeVertexNormals();
   return geo;
 }
 
-// Tall wild-grass tussock: seven arching blades with pale seed tips, planted
-// in noise-driven patches so meadows break up into regular / wild grass zones.
+export function scatter(grid: TileGrid, items: ScatterItem[], geo: THREE.BufferGeometry, mat: THREE.Material) {
+  if (!items.length) return;
+  const mesh = new THREE.InstancedMesh(geo, mat, items.length);
+  const d = new THREE.Object3D();
+  const col = new THREE.Color();
+  items.forEach((it, i) => {
+    d.position.set(it.x, it.y, it.z);
+    if (it.quat) {
+      d.quaternion.copy(it.quat);
+    } else {
+      d.rotation.set(it.rx, it.ry, it.rz);
+    }
+    d.scale.setScalar(it.s);
+    d.updateMatrix();
+    mesh.setMatrixAt(i, d.matrix);
+    col.setRGB(it.r, it.g, it.b);
+    mesh.setColorAt(i, col);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  grid.group.add(mesh);
+}
+
+// Wild-grass tussock: 7 taller straw-green blades rising to pale seed tips.
+// Restored from the pre-Wave-1 builder (user ruling: the kit grass models
+// didn't match the wind-animated carpet and never swayed — the tussock layer
+// rides the carpet's wind shader again, so both grass types sway together).
 export function makeTussockGeometry(grid: TileGrid): THREE.BufferGeometry {
+  void grid;
   const positions: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
@@ -390,90 +302,4 @@ export function makeTussockGeometry(grid: TileGrid): THREE.BufferGeometry {
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return geo;
-}
-
-export function makeTwigGeometry(grid: TileGrid): THREE.BufferGeometry {
-  const mainStem = new THREE.CylinderGeometry(0.045, 0.08, 1.8, 5);
-  mainStem.rotateZ(Math.PI / 2);
-  mainStem.rotateY(0.25);
-  mainStem.translate(0, 0.04, 0);
-
-  const fork1 = new THREE.CylinderGeometry(0.025, 0.045, 0.85, 4);
-  fork1.rotateZ(Math.PI / 2 + 0.65);
-  fork1.rotateY(-0.4);
-  fork1.translate(0.25, 0.03, 0.22);
-
-  const fork2 = new THREE.CylinderGeometry(0.02, 0.035, 0.6, 4);
-  fork2.rotateZ(Math.PI / 2 - 0.55);
-  fork2.rotateY(0.35);
-  fork2.translate(-0.35, 0.03, -0.16);
-
-  const merged = mergeGeometries(grid, [mainStem, fork1, fork2]);
-  mainStem.dispose();
-  fork1.dispose();
-  fork2.dispose();
-  return merged;
-}
-
-export function makeWildflowerGeometry(grid: TileGrid): THREE.BufferGeometry {
-  const stem = new THREE.CylinderGeometry(0.03, 0.045, 0.52, 4);
-  stem.translate(0, 0.26, 0);
-
-  const leaf1 = new THREE.BoxGeometry(0.28, 0.02, 0.08);
-  leaf1.rotateY(0.4);
-  leaf1.translate(0.08, 0.06, 0.04);
-
-  const leaf2 = new THREE.BoxGeometry(0.26, 0.02, 0.08);
-  leaf2.rotateY(-0.9);
-  leaf2.translate(-0.07, 0.08, -0.05);
-
-  const blossom = new THREE.DodecahedronGeometry(0.18, 0);
-  blossom.translate(0, 0.54, 0);
-
-  const merged = mergeGeometries(grid, [stem, leaf1, leaf2, blossom]);
-  stem.dispose();
-  leaf1.dispose();
-  leaf2.dispose();
-  blossom.dispose();
-  return merged;
-}
-
-export function makeSnowDriftGeometry(grid: TileGrid): THREE.BufferGeometry {
-  const geo = new THREE.SphereGeometry(1.2, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.5);
-  geo.scale(1.4, 0.28, 0.95);
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const vx = pos.getX(i);
-    let vy = pos.getY(i);
-    const vz = pos.getZ(i);
-    vy += Math.sin(vx * 1.5 + vz * 0.8) * 0.06;
-    pos.setXYZ(i, vx, Math.max(0.02, vy), vz);
-  }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
-  return geo;
-}
-
-export function scatter(grid: TileGrid, items: ScatterItem[], geo: THREE.BufferGeometry, mat: THREE.Material) {
-  if (!items.length) return;
-  const mesh = new THREE.InstancedMesh(geo, mat, items.length);
-  const d = new THREE.Object3D();
-  const col = new THREE.Color();
-  items.forEach((it, i) => {
-    d.position.set(it.x, it.y, it.z);
-    if (it.quat) {
-      d.quaternion.copy(it.quat);
-    } else {
-      d.rotation.set(it.rx, it.ry, it.rz);
-    }
-    d.scale.setScalar(it.s);
-    d.updateMatrix();
-    mesh.setMatrixAt(i, d.matrix);
-    col.setRGB(it.r, it.g, it.b);
-    mesh.setColorAt(i, col);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.castShadow = true; mesh.receiveShadow = true;
-  grid.group.add(mesh);
 }

@@ -1,11 +1,14 @@
 // Actors — every creature token as a SKELETAL figure (rig/HumanoidRig) with
 // procedural animation (rig/animations), equipment (rig/equipment), cloth cloak,
-// HP plaque, contact shadow and team ring. True 5E medium scale (~6ft) on 5ft grid.
+// contact shadow and team ring. True 5E medium scale (~6ft) on 5ft grid.
+// Policy: NO floating plaques over tokens — not players, not monsters, nothing.
+// All HP/status reads live in HUD panels (party cards, combat UI).
 import * as THREE from 'three';
 import type { Engine } from './Engine';
 import type { ActionFx, TokenView } from './types';
 import { Bus, EV } from './bus';
 import { softSprite } from './sprites';
+import { ConditionFX, CONDITION_BURST } from './conditionFX';
 import { B, HumanoidRig } from './rig/HumanoidRig';
 import { Animator } from './rig/animations';
 import type { WeaponStyle } from './rig/animations';
@@ -21,6 +24,11 @@ const FOOT_LOCK_Y = 0.06;
 const _footV = new THREE.Vector3();   // shared scratch — no per-frame allocations
 const REMOTE_POSITION_DELAY_MS = 150; // buffers the 10 Hz movement snapshots
 const MAX_REMOTE_POSITION_SAMPLES = 8;
+// Server-side position restores (leaving a dungeon back into the streamed
+// world, DM warps) can move the hero farther than legit prediction drift —
+// beyond this delta the sync snaps the local figure instead of waiting for a
+// move:rejected correction the player would have to trigger by walking.
+const LOCAL_TELEPORT_FT = 32;
 
 function hashStr(s: string): number {
   let h = 2166136261;
@@ -41,10 +49,8 @@ interface Actor {
   rig: HumanoidRig;
   anim: Animator;
   style: WeaponStyle;
-  hpBar: THREE.Sprite;
-  hpCanvas: HTMLCanvasElement;
-  hpTex: THREE.CanvasTexture;
-  plaqueY: number;
+  headY: number;               // world-Y of the head top (camera focus + screen anchoring)
+  condFX: ConditionFX;         // P2.5 status auras (particles, never plaques)
   data: TokenView;
   // motion tracking (smoothed, fed to the Animator like sim/player.rs)
   speed: number;
@@ -73,59 +79,6 @@ export class Actors {
     this.labelHost = document.createElement('div');
     this.labelHost.style.cssText = 'position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:20';
     document.body.appendChild(this.labelHost);
-    if ((document as any).fonts?.ready) {
-      (document as any).fonts.ready.then(() => { for (const [, a] of this.actors) this.drawHp(a); });
-    }
-  }
-
-  // ── HP plaque (canvas sprite) ─────────────────────────────────────────
-  private makeHpBar(): { sprite: THREE.Sprite; canvas: HTMLCanvasElement; tex: THREE.CanvasTexture } {
-    const canvas = document.createElement('canvas');
-    canvas.width = 168; canvas.height = 42;
-    const tex = new THREE.CanvasTexture(canvas);
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false }));
-    sprite.scale.set(7.5, 1.9, 1);
-    sprite.center.set(0.5, 0);
-    return { sprite, canvas, tex };
-  }
-
-  private drawHp(a: Actor) {
-    const g = a.hpCanvas.getContext('2d')!;
-    const W = 168, H = 42;
-    g.clearRect(0, 0, W, H);
-    const pct = Math.max(0, Math.min(1, a.data.hp / a.data.hpMax));
-    g.beginPath();
-    const r = 6;
-    g.moveTo(r + 1, 1); g.lineTo(W - r - 1, 1); g.quadraticCurveTo(W - 1, 1, W - 1, r + 1);
-    g.lineTo(W - 1, H - r - 1); g.quadraticCurveTo(W - 1, H - 1, W - r - 1, H - 1);
-    g.lineTo(r + 1, H - 1); g.quadraticCurveTo(1, H - 1, 1, H - r - 1);
-    g.lineTo(1, r + 1); g.quadraticCurveTo(1, 1, r + 1, 1);
-    g.closePath();
-    g.fillStyle = 'rgba(10,9,12,0.82)';
-    g.fill();
-    g.strokeStyle = 'rgba(184,149,47,0.55)';
-    g.lineWidth = 1.4;
-    g.stroke();
-    let fs = 17;
-    g.font = `600 ${fs}px Cinzel, Georgia, serif`;
-    while (g.measureText(a.data.name).width > W - 24 && fs > 10) {
-      fs -= 1; g.font = `600 ${fs}px Cinzel, Georgia, serif`;
-    }
-    g.textAlign = 'center';
-    g.fillStyle = 'rgba(0,0,0,0.8)';
-    g.fillText(a.data.name, W / 2 + 1, 17);
-    g.fillStyle = a.data.kind === 'player' ? (a.data.color || '#e6c766') : '#d8d2c4';
-    g.fillText(a.data.name, W / 2, 16);
-    const bx = 22, bw = 124, by = 25, bh = 8;
-    g.fillStyle = '#181210';
-    g.fillRect(bx, by, bw, bh);
-    const col = pct > 0.5 ? '#8a2a1f' : pct > 0.25 ? '#a33a1f' : '#c9541f';
-    g.fillStyle = a.data.kind === 'player' ? '#77864a' : col;
-    g.fillRect(bx, by, bw * pct, bh);
-    g.strokeStyle = 'rgba(200,190,170,0.35)';
-    g.lineWidth = 1;
-    g.strokeRect(bx - 0.5, by - 0.5, bw + 1, bh + 1);
-    a.hpTex.needsUpdate = true;
   }
 
   // ── sync with server tokens ──────────────────────────────────────────
@@ -200,10 +153,8 @@ export class Actors {
           group.add(lantern);
         }
 
-        const { sprite, canvas, tex } = this.makeHpBar();
-        const plaqueY = (rig.topY + 1.15) * (t.size || 1);
-        sprite.position.y = plaqueY;
-        group.add(sprite);
+        const headY = (rig.topY + 0.25) * (t.size || 1);
+        const condFX = new ConditionFX(group, 1.85 * rScale, headY);
         group.position.set(t.x, 0, t.z);
         group.rotation.y = t.rotY || 0;
         this.eng.scene.add(group);
@@ -211,7 +162,8 @@ export class Actors {
         a = {
           id: t.id, group, rig, anim: new Animator(seed),
           style: WEAPON_STYLE[t.archetype] || 'sword',
-          hpBar: sprite, hpCanvas: canvas, hpTex: tex, plaqueY,
+          headY,
+          condFX,
           data: t,
           speed: 0, prevSpeed: 0, accel: 0, yawRate: 0,
           lastX: t.x, lastZ: t.z, lastRotY: t.rotY || 0,
@@ -222,10 +174,9 @@ export class Actors {
         a.downed = t.hp <= 0 && !t.deathSaves?.dead && t.kind === 'player';
         a.anim.setDowned(a.downed);
         this.actors.set(t.id, a);
-        this.drawHp(a);
+        a.condFX.setConditions(t.conditions || []);
       } else {
-        const prevHp = a.data.hp;
-        const wasDead = a.dead;
+        const prevConds = (a.data.conditions || []) as string[];
         if (t.id !== this.eng.controls.tokenId &&
             (t.x !== a.data.x || t.z !== a.data.z || t.rotY !== a.data.rotY)) {
           const receivedAt = performance.now();
@@ -238,8 +189,28 @@ export class Actors {
             a.remotePositions.splice(0, a.remotePositions.length - MAX_REMOTE_POSITION_SAMPLES);
           }
         }
+        // Local-token teleport snap: the hero is prediction-driven and never
+        // takes positions from TOKENS_SYNC, so a server-side restore (dungeon
+        // exit re-entry) would otherwise leave the figure at its dungeon-era
+        // spot until the player happened to walk into a move:rejected.
+        if (t.id === this.eng.controls.tokenId && Number.isFinite(t.x) && Number.isFinite(t.z) &&
+            Math.hypot(t.x - a.data.x, t.z - a.data.z) > LOCAL_TELEPORT_FT) {
+          a.group.position.set(t.x, 0, t.z);
+          a.group.rotation.y = t.rotY || 0;
+          a.lastX = t.x; a.lastZ = t.z; a.lastRotY = t.rotY || 0;
+          a.remotePositions.length = 0;
+          a.remotePositions.push({ x: t.x, z: t.z, rotY: t.rotY || 0, at: performance.now() });
+        }
         a.data = t;
-        if (t.hp !== prevHp || a.dead !== wasDead) this.drawHp(a);
+        // P2.5: condition auras — diff, refresh, burst on newly APPLIED
+        const newConds = (t.conditions || []) as string[];
+        if (JSON.stringify(newConds) !== JSON.stringify(prevConds)) a.condFX.setConditions(newConds);
+        for (const c of newConds) {
+          if (!prevConds.includes(c)) {
+            const world = this.anchorWorld(t.id);
+            if (world) this.eng.effects.impact(world, CONDITION_BURST[c] || 'force');
+          }
+        }
         // look changed (e.g. re-forge) → rebuild the figure next sync cycle
         if (JSON.stringify(t.look || null) !== JSON.stringify((a.rig as any).__lookKey ?? null)) {
           // rare; accept the old figure for now (v1)
@@ -273,7 +244,14 @@ export class Actors {
 
   /** Head-top world position (camera focus + screen projection). */
   private headPos(a: Actor, out = new THREE.Vector3()): THREE.Vector3 {
-    return out.set(a.group.position.x, a.plaqueY - 0.9, a.group.position.z);
+    return out.set(a.group.position.x, a.headY, a.group.position.z);
+  }
+
+  /** P2.6 world-space head anchor for floating text / impact bursts. */
+  anchorWorld(id: string, out = new THREE.Vector3()): THREE.Vector3 | null {
+    const a = this.actors.get(id);
+    if (!a) return null;
+    return out.set(a.group.position.x, a.group.position.y + a.headY, a.group.position.z);
   }
 
   getScreenPos(actorId: string): { x: number; y: number } | null {
@@ -300,11 +278,13 @@ export class Actors {
       case 'buff': a.anim.trigger('buff', power); break;
       case 'hit':
         a.anim.trigger('hit');
+        a.rig.setFlash(0.55);                                   // P2.6 hit flash
         this.eng.effects.burst(a.group.position, 0xc93a2a, 18);
         this.eng.cameraRig.shake(0.45);
         break;
       case 'crit':
         a.anim.trigger('crit', power);
+        a.rig.setFlash(1.0);                                    // P2.6 crit flash
         this.eng.effects.burst(a.group.position, 0xff6a2a, 34);
         this.eng.cameraRig.shake(0.9);
         break;
@@ -322,10 +302,12 @@ export class Actors {
     for (const [id, a] of this.actors) {
       const isLocal = id === this.eng.controls.tokenId;
       const d = a.data;
-      const cell = this.eng.grid.worldToCell(a.group.position.x, a.group.position.z);
-      const inSight = d.kind !== 'monster' || this.eng.fog.isVisible(cell.cx, cell.cz);
-      a.group.visible = !d.hidden && inSight;
-      a.hpBar.visible = !isLocal && inSight && !d.hidden;
+      // P3.13: fog of war removed — monsters render whenever the server sends
+      // them (reveal is light-aware, server rules/Light.js). Unlit figures in
+      // dark rooms are hidden by actual darkness now, not by a visibility gate.
+      a.group.visible = !d.hidden;
+      // No floating plaques on anything (players, monsters, nothing) — that
+      // read lives in the HUD (party cards / combat UI), never in-world.
       const condition = String(d.conditions?.[0] || '').toLowerCase();
       const statusColor = /poison|disease/.test(condition) ? 0x80bb5d
         : /burn|fire/.test(condition) ? 0xf28b45
@@ -342,13 +324,13 @@ export class Actors {
       (a.statusRing.material as THREE.MeshBasicMaterial).color.setHex(a.downed ? 0xb84531 : statusColor);
       (a.statusRing.material as THREE.MeshBasicMaterial).opacity = 0.4 + Math.sin(t * 4) * 0.12;
 
-      // ── dying: rig collapse + dissolve, plaque fades ──
+      // ── dying: rig collapse + dissolve ──
       if (isDead && !a.dead) { a.dead = true; a.dieT = 0; a.anim.setDowned(false); a.anim.trigger('die'); }
       if (a.dead) {
         if (a.dieT >= 0) a.dieT = Math.min(1, a.dieT + dt * 0.8);
         a.rig.setDissolve(a.dieT);
+        a.condFX.setConditions([]);            // auras die with the body
         a.group.position.y = -a.dieT * 0.55;
-        (a.hpBar.material as THREE.SpriteMaterial).opacity = 1 - a.dieT;
         (a.ring.material as THREE.MeshBasicMaterial).opacity = 0.28 * (1 - a.dieT);
       }
 
@@ -430,6 +412,9 @@ export class Actors {
         const m = a.rig.innerGlow.material as THREE.SpriteMaterial;
         m.opacity = 0.45 + Math.sin(t * 2.1) * 0.12 + pose.glow * 0.4;
       }
+
+      // ── P2.5 status auras (particles, not plaques) ──
+      a.condFX.update(dt, t);
 
       // ── hero lantern flicker ──
       if (a.lantern) {

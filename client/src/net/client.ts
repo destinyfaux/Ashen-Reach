@@ -52,16 +52,34 @@ function regionIdOf(rx: number, rz: number): string {
 function ensureWorldRegions() {
   const w = useGame.getState().world;
   if (!w) return;
+  void fetchRegion(regionIdOf(w.focus.rx, w.focus.rz), 0);
+  let i = 0;
   for (let dz = -1; dz <= 1; dz++) {
     for (let dx = -1; dx <= 1; dx++) {
-      const rx = w.focus.rx + dx, rz = w.focus.rz + dz;
-      void fetchRegion(regionIdOf(rx, rz));
+      if (dx === 0 && dz === 0) continue;
+      void fetchRegion(regionIdOf(w.focus.rx + dx, w.focus.rz + dz), ++i);
     }
   }
 }
 
-async function fetchRegion(id: string) {
-  if (regionCache.has(id) || regionFetching.has(id)) return;
+async function fetchRegion(id: string, stagger = 0) {
+  if (regionFetching.has(id)) return;
+  const cached = regionCache.get(id);
+  if (cached) {
+    // Cached defs must still be RE-EMITTED: the engine can legitimately have
+    // torn the region down since (entering a dungeon wipes every built
+    // overworld region — TileGrid.build retains nothing), and a silent return
+    // here is how the post-exit world got stuck on the focus region alone.
+    // addRegion() is idempotent for regions still held, so in the common case
+    // this is free. Re-emits are staggered so rebuilding a whole ring after a
+    // dungeon exit never stalls one frame with 8 geometry builds, and dropped
+    // if we've since gone back indoors (stale timer could otherwise mount a
+    // world region over a dungeon scene).
+    setTimeout(() => {
+      if (useGame.getState().world) Bus.emit(EV.MAP_LOAD, cached);
+    }, stagger * 40);
+    return;
+  }
   regionFetching.add(id);
   try {
     const r = await fetch(`/api/map/${encodeURIComponent(id)}`);
@@ -255,6 +273,12 @@ function dispatch(ev: string, data: any) {
           Bus.emit(EV.MAP_LOAD, data.map);
           Bus.emit(EV.DOORS_SYNC, lastDoors);
           Bus.emit(EV.TOKENS_SYNC, lastTokens || []);
+          // Region re-entry (leaving a dungeon): building the dungeon map wiped
+          // every locally built region (TileGrid.build retains nothing) and the
+          // inline def only restores the focus region — without this refetch
+          // the world stays a single region until the next border crossing.
+          // regionCache/fetch guards make this free for anything still held.
+          if (data.map.region) ensureWorldRegions();
         } else {
           currentMapId = mapId!;
           if (data.world && data.world.mapId === mapId) {

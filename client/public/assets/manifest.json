@@ -1,0 +1,31 @@
+{
+ "kits": {
+  "foliage": {
+   "sourcePack": "Foliage_Trees_glTF",
+   "models": 22,
+   "tris": 51162,
+   "uniqueSourceTextures": 9,
+   "glbBytes": 958832
+  },
+  "nature": {
+   "sourcePack": "Stylized Nature MegaKit[Standard]",
+   "models": 54,
+   "tris": 132935,
+   "uniqueSourceTextures": 13,
+   "glbBytes": 1891740
+  },
+  "rocks": {
+   "sourcePack": "Stylized Nature MegaKit[Standard]",
+   "models": 8,
+   "tris": 9988,
+   "uniqueSourceTextures": 2,
+   "glbBytes": 300568
+  }
+ },
+ "cookedAt": "2026-10-15T23:22:17.995Z",
+ "budget": {
+  "perFileMB": 2,
+  "totalMB": 4
+ },
+ "totalGlbBytes": 3151140
+}

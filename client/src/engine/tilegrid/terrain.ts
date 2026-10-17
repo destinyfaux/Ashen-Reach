@@ -18,12 +18,121 @@ const BOSS_STONE = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide
 });
 
+// ── procedural snow ground (Wave 1.5) ──────────────────────────────────────
+// The snow biomes' floor used to be the grass texture brightened by tint —
+// multiplying a green albedo can never read as white. Regions whose dominant
+// biome is a snow biome swap to this procedural snow ground instead (drift
+// mottling, wind streaks, sparkle); per-cell biome tints stay near-neutral on
+// it. Cached once; only the map/bump slots buildFloor consumes are populated.
+let snowFloorSet: { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } | null = null;
+function getSnowFloorSet(): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
+  if (snowFloorSet) return snowFloorSet;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 256;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to create snow floor canvas');
+  context.fillStyle = '#e3eaf3';
+  context.fillRect(0, 0, 256, 256);
+  // large soft mottles: wind-packed drifts lighter, shadowed patches bluer
+  for (let i = 0; i < 46; i++) {
+    const x = hash2(i, 3, 4301) * 256, y = hash2(i, 5, 4303) * 256;
+    const r = 14 + hash2(i, 7, 4305) * 40;
+    const light = hash2(i, 9, 4307) > 0.5;
+    const g = context.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, light ? 'rgba(246,249,253,0.5)' : 'rgba(194,206,225,0.35)');
+    g.addColorStop(1, 'rgba(227,234,243,0)');
+    context.fillStyle = g;
+    context.beginPath(); context.arc(x, y, r, 0, Math.PI * 2); context.fill();
+  }
+  // gentle wind streaks
+  context.strokeStyle = 'rgba(208,218,235,0.28)';
+  for (let i = 0; i < 26; i++) {
+    const y = hash2(i, 11, 4309) * 256;
+    context.lineWidth = 1 + hash2(i, 13, 4311) * 3;
+    context.beginPath();
+    context.moveTo(0, y);
+    context.bezierCurveTo(
+      80, y + (hash2(i, 15, 4313) - 0.5) * 26,
+      170, y + (hash2(i, 17, 4315) - 0.5) * 26,
+      256, y + (hash2(i, 19, 4317) - 0.5) * 18);
+    context.stroke();
+  }
+  // sparkle
+  for (let i = 0; i < 420; i++) {
+    const x = hash2(i, 21, 4319) * 256, y = hash2(i, 23, 4321) * 256;
+    context.fillStyle = `rgba(255,255,255,${0.25 + hash2(i, 25, 4323) * 0.45})`;
+    context.fillRect(x, y, 1.4, 1.4);
+  }
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  // soft gray-noise bump
+  const bcanvas = document.createElement('canvas');
+  bcanvas.width = 128; bcanvas.height = 128;
+  const bcontext = bcanvas.getContext('2d');
+  if (!bcontext) throw new Error('Unable to create snow bump canvas');
+  bcontext.fillStyle = '#808080';
+  bcontext.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 240; i++) {
+    const x = hash2(i, 31, 4325) * 128, y = hash2(i, 33, 4327) * 128;
+    const r = 2 + hash2(i, 35, 4329) * 7;
+    const v = Math.floor(96 + hash2(i, 37, 4331) * 64);
+    const g = bcontext.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${v},${v},${v},0.5)`);
+    g.addColorStop(1, 'rgba(128,128,128,0)');
+    bcontext.fillStyle = g;
+    bcontext.beginPath(); bcontext.arc(x, y, r, 0, Math.PI * 2); bcontext.fill();
+  }
+  const bump = new THREE.CanvasTexture(bcanvas);
+  bump.wrapS = bump.wrapT = THREE.RepeatWrapping;
+  snowFloorSet = { map, bump };
+  return snowFloorSet;
+}
+
 // ── floor: one plane, per-cell vertex-color variation + wall grime halos ──
+// Snow ground is a PER-VERTEX BLEND now (user bug report: the snow biome
+// met every neighbor as a harsh line — every other biome blends because they
+// share the grass albedo and differ only by tint, but snow used to swap the
+// whole region's texture). Each floor vertex carries a smoothed neighborhood
+// snow weight, and the material crossfades biome albedo ↔ procedural snow
+// in the fragment shader, so snowlines dissolve over ~15-25 ft like any
+// other biome pair — inside regions and across seams alike.
 export function buildFloor(grid: TileGrid, map: MapDef, wallSet: Set<number>) {
   const W = map.size.w, H = map.size.h;
   const floorSet = grid.areaTiles.floor;
+  const kindsF = map.biomes?.kinds || [];
+  const biomeCellsF = map.biomes?.cells || [];
+  const isSnowBiome = (b: string | undefined) => b === 'snowfield' || b === 'snow_forest';
+  // Per-corner snow weight: 4×4 cell neighborhood around the grid corner,
+  // averaged, then smoothstepped so the snowline eases in instead of
+  // stepping per cell. Corner-indexed (vertex order matches the loop below).
+  const cornersSnow = new Float32Array(W * H * 4);
+  if (biomeCellsF.length === W * H) {
+    for (let z = 0; z < H; z++) for (let x = 0; x < W; x++) {
+      const corners = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
+      for (let c = 0; c < 4; c++) {
+        let sum = 0;
+        for (let dz = -2; dz <= 1; dz++) for (let dx = -2; dx <= 1; dx++) {
+          const sx = Math.min(W - 1, Math.max(0, corners[c][0] + dx));
+          const sz = Math.min(H - 1, Math.max(0, corners[c][1] + dz));
+          sum += isSnowBiome(kindsF[biomeCellsF[sz * W + sx]]) ? 1 : 0;
+        }
+        const raw = sum / 16;
+        const t = Math.min(1, Math.max(0, (raw - 0.2) / 0.6));
+        cornersSnow[(z * W + x) * 4 + c] = t * t * (3 - 2 * t);
+      }
+    }
+  }
+  let snowMax = 0;
+  for (let i = 0; i < cornersSnow.length; i++) if (cornersSnow[i] > snowMax) snowMax = cornersSnow[i];
+  const snowGround = !grid.indoor && snowMax > 0.001;
   const set = getTextureSet(floorSet.kind, floorSet.variant);
-  set.map.repeat.set((W * CELL) / floorSet.repeatFt, (H * CELL) / floorSet.repeatFt);
+  const snowSet = snowGround ? getSnowFloorSet() : null;
+  const repeatFt = floorSet.repeatFt;
+  const floorRoughness = floorSet.roughness;
+  const floorBumpScale = floorSet.bumpScale;
+  const floorMetalness = floorSet.metalness;
+  set.map.repeat.set((W * CELL) / repeatFt, (H * CELL) / repeatFt);
   set.bump.repeat.copy(set.map.repeat);
   const positions = new Float32Array(W * H * 4 * 3);
   const uvs = new Float32Array(W * H * 4 * 2);
@@ -46,7 +155,9 @@ export function buildFloor(grid: TileGrid, map: MapDef, wallSet: Set<number>) {
   }
   const biomeTints: Record<string, [number, number, number]> = {
     forest: [0.78, 1.08, 0.78], meadow: [1.08, 1.12, 0.86],
-    snow_forest: [1.15, 1.24, 1.25], snowfield: [1.45, 1.52, 1.58],
+    // snow tints near-neutral: the snow floor texture carries the white — the
+    // old bright-green multipliers (1.45+) over grass albedo never read as snow
+    snow_forest: [0.97, 1.01, 1.08], snowfield: [1.0, 1.04, 1.11],
     deadlands: [1.04, 0.91, 0.76], mountains: [1.12, 1.12, 1.1],
     town: [1.28, 1.16, 0.93], graveyard: [0.82, 0.96, 0.78],
     ruins: [0.88, 0.92, 0.8],
@@ -100,10 +211,14 @@ export function buildFloor(grid: TileGrid, map: MapDef, wallSet: Set<number>) {
     // carpet with bare-soil clearings. The same field drives grass
     // suppression in flora and pebble scatter in props, so dirt patches,
     // missing grass and pebbles always agree with each other.
-    if (!grid.indoor && minWaterDist > 1.6 && !roadSet.has(grid.key(x, z))) {
+    // Snow fade: bare soil does not show through packed snow, so the dirt
+    // blend dissolves with the per-cell snow weight (full snow → no dirt).
+    const snowAvg = (cornersSnow[vertex] + cornersSnow[vertex + 1] +
+      cornersSnow[vertex + 2] + cornersSnow[vertex + 3]) / 4;
+    if (!grid.indoor && snowAvg < 0.98 && minWaterDist > 1.6 && !roadSet.has(grid.key(x, z))) {
       const dirt = dirtField(orgX + x, orgZ + z);
       if (dirt > 0.60) {
-        const t = Math.min(1, (dirt - 0.60) / 0.16);
+        const t = Math.min(1, (dirt - 0.60) / 0.16) * (1 - snowAvg);
         tint[0] = tint[0] * (1 - t) + 0.60 * t;
         tint[1] = tint[1] * (1 - t) + 0.46 * t;
         tint[2] = tint[2] * (1 - t) + 0.33 * t;
@@ -128,12 +243,45 @@ export function buildFloor(grid: TileGrid, map: MapDef, wallSet: Set<number>) {
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  if (snowGround) geo.setAttribute('snowW', new THREE.BufferAttribute(cornersSnow, 1));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   geo.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({
-    map: set.map, bumpMap: set.bump, bumpScale: floorSet.bumpScale,
-    roughness: floorSet.roughness, metalness: floorSet.metalness, vertexColors: true
+    map: set.map, bumpMap: set.bump, bumpScale: floorBumpScale,
+    roughness: floorRoughness, metalness: floorMetalness, vertexColors: true
   });
+  if (snowGround && snowSet) {
+    // Dual-albedo crossfade (see block comment above buildFloor): the biome
+    // albedo stays the base map; the procedural snow ground rides a second
+    // sampler with its own 26 ft repeat, mixed per-vertex by vSnowW. The
+    // vertex tint (vColor) multiplies BOTH albedos so shoreline/dirt tints
+    // keep working on snow. Snow roughness eases toward packed-snow values.
+    const snowMap = snowSet.map;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uSnowMap = { value: snowMap };
+      shader.uniforms.uSnowRepeat = { value: new THREE.Vector2((W * CELL) / 26, (H * CELL) / 26) };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+        attribute float snowW;
+        varying float vSnowW;
+        varying vec2 vSnowUv;
+        uniform vec2 uSnowRepeat;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vSnowW = snowW;
+        vSnowUv = uv * uSnowRepeat;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+        varying float vSnowW;
+        varying vec2 vSnowUv;
+        uniform sampler2D uSnowMap;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+        vec3 arSnowTexel = texture2D(uSnowMap, vSnowUv).rgb * vColor.rgb;
+        diffuseColor.rgb = mix(diffuseColor.rgb, arSnowTexel, vSnowW);`)
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.85, vSnowW);`);
+    };
+    mat.customProgramCacheKey = () => 'ashenreach-floor-snowblend-v1';
+  }
   const floor = new THREE.Mesh(geo, mat);
   floor.receiveShadow = true;
   grid.group.add(floor);

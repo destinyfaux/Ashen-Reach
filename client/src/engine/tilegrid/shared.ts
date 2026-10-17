@@ -135,3 +135,18 @@ export function flowerField(wx: number, wz: number): number {
 export function shrubField(wx: number, wz: number): number {
   return vnoise(wx, wz, 24, 9511) * 0.7 + vnoise(wx, wz, 9, 9512) * 0.3;
 }
+
+/** 0..1 grass abundance field. Grass country is NOT uniform: this field turns
+ *  the carpet's spawn count up in lush pockets and down in thin, nibbled
+ *  ground (0.4x..1.25x around the old fixed density), trimming total grass
+ *  while keeping the full-coverage read. */
+export function grassDensityField(wx: number, wz: number): number {
+  return vnoise(wx, wz, 23, 9601) * 0.6 + vnoise(wx, wz, 9, 9602) * 0.4;
+}
+
+/** 0..1 tall-grass patch field. Where this rises past its threshold the carpet
+ *  clumps grow at roughly double height — waist-high pockets that break up the
+ *  static, evenly-mown read of the meadows. */
+export function tallGrassField(wx: number, wz: number): number {
+  return vnoise(wx, wz, 15, 9611) * 0.7 + vnoise(wx, wz, 6, 9612) * 0.3;
+}

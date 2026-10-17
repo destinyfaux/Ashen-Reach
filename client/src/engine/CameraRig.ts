@@ -182,10 +182,16 @@ export class CameraRig {
     const horiz = this.dist * cp;
     let cy = headY + this.dist * sp;
 
-    // Ceiling cap: only apply if finite and indoor. If the character ascends a mountain
-    // or elevated terrain, ensure maxY never forces the camera below head height.
+    // Ceiling cap: INDOOR ONLY (user bug report: on high mountains the camera
+    // could never rise above the character). TileGrid's ceiling property is
+    // `indoor` — the old code probed a nonexistent `isIndoor`, so `isOutdoor`
+    // was always false and the outdoor grid's cameraMaxY (a flat 60 ft) capped
+    // every orbit. At elevation, maxY = max(60, headY + 2) collapsed to
+    // headY + 2, welding the camera to head height exactly where the world
+    // gets tall. Outdoors now has NO ceiling: pitch/dist alone shape the orbit
+    // and the terrain clamps below keep the eye out of the ground.
     const gridMaxY = eng.grid.cameraMaxY;
-    const isOutdoor = (eng.grid as any).isIndoor === false;
+    const isOutdoor = (eng.grid as unknown as { indoor?: boolean }).indoor === false;
     const hasCeiling = !isOutdoor && gridMaxY != null && Number.isFinite(gridMaxY);
     const maxY = hasCeiling ? Math.max(gridMaxY, headY + 2) : Infinity;
 
@@ -198,7 +204,26 @@ export class CameraRig {
     _dir.subVectors(_desired, _head);
     const L = _dir.length();
     if (L > 1e-4) _dir.multiplyScalar(1 / L);
-    const maxT = this.sweepClearT(_head, _desired, Math.min(headY, cy), Math.max(headY, cy));
+    // Quick win (mountain camera): the sweep above only tests prop colliders —
+    // orbiting on slopes sent the camera through the hillside. March the same
+    // sightline against the terrain and cap the length at the first sample
+    // that dips below ground + clearance, so the camera rides in front of the
+    // slope instead of inside it.
+    const groundClear = 1.5;
+    const groundSteps = 7;
+    let groundT = 1;
+    for (let i = 1; i <= groundSteps; i++) {
+      const t = i / groundSteps;
+      const sx = _head.x + _dir.x * L * t;
+      const sy = _head.y + _dir.y * L * t;
+      const sz = _head.z + _dir.z * L * t;
+      const g = eng.grid.terrainHeightAt(sx, sz);
+      if (Number.isFinite(g) && sy < g + groundClear) {
+        groundT = Math.max(0.12, (i - 1) / groundSteps);
+        break;
+      }
+    }
+    const maxT = Math.min(this.sweepClearT(_head, _desired, Math.min(headY, cy), Math.max(headY, cy)), groundT);
 
     const targetLen = Math.min(L, Math.max(7, maxT * L - 1.7));
     // smooth rate of the gap: fast when far from target, gentle when close —
@@ -210,6 +235,12 @@ export class CameraRig {
 
     _tmp.copy(_head).addScaledVector(_dir, this.curLen);
     this.pushOutOfBoxes(_tmp, _head);
+
+    // Quick win (mountain camera): final terrain clamp — after prop push-out
+    // and length smoothing the camera must still sit above the ground, never
+    // sunk into a slope face or behind a crest.
+    const camGround = eng.grid.terrainHeightAt(_tmp.x, _tmp.z);
+    if (Number.isFinite(camGround) && _tmp.y < camGround + 1.4) _tmp.y = camGround + 1.4;
 
     // single smoothing stage: the focus lerp above is the only smoothing —
     // a second cascaded position lerp doubled the lag and fed the jitter

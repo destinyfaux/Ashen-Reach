@@ -10,18 +10,19 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { createGradePass } from './grade';
 import { World } from './World';
 import { TileGrid } from './TileGrid';
-import { FogOfWar } from './FogOfWar';
+import { Vision } from './Vision';
 import { Actors } from './Actors';
 import { CameraRig } from './CameraRig';
 import { Controls } from './Controls';
-import { Effects } from './Effects';
+import { Effects, DMG_TEXT_COLOR } from './Effects';
 import { Bus, EV } from './bus';
 import { useGame } from '../game/store';
 import type { DoorState } from '../game/store';
 import type { MapDef } from './types';
-import { playSfx } from '../audio/music';
-import { setMusicScene } from '../audio/music';
+import { playSfx, ELEMENT_SFX, setMusicScene } from '../audio/music';
 import { getAreaTileSet } from './materials';
+import { setAssetRenderer } from './assets';
+import { acquireProgramsAsync } from './assets';
 import { worldProbe } from './worldProbe';
 import type { GameStore } from '../game/store';
 
@@ -40,7 +41,7 @@ export class Engine {
 
   world: World;
   grid: TileGrid;
-  fog: FogOfWar;
+  vision: Vision;
   actors: Actors;
   cameraRig: CameraRig;
   controls: Controls;
@@ -75,6 +76,15 @@ export class Engine {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
+    setAssetRenderer(this.renderer); // cooked-kit assets (KTX2 support probe)
+    // ANGLE/D3D: shader info-log queries (getProgramInfoLog / getShaderInfoLog /
+    // LINK_STATUS) force a synchronous wait for the driver's background link.
+    // three runs them for EVERY new program on first draw because
+    // debug.checkShaderErrors defaults to true — profiler-measured as 2-7s
+    // main-thread freezes at every region-ring crossing (sampled stacks:
+    // WebGLProgram onFirstUse under setProgram/renderBufferDirect). Release
+    // behavior: trust the shaders, never query the logs.
+    this.renderer.debug.checkShaderErrors = false;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x07090c);
@@ -97,6 +107,27 @@ export class Engine {
       // contact shadows — grounded, object-anchored shading at a modest cost
       this.gtaoPass = new GTAOPass(this.scene, this.camera, window.innerWidth, window.innerHeight);
       this.gtaoPass.output = GTAOPass.OUTPUT.Default;
+      // GTAO's G-buffer pre-pass renders the scene with a MeshNormalMaterial
+      // override, which ignores alphaTest: every alpha-cutout card (tree/bush
+      // foliage) writes a FULL solid quad into the AO depth buffer. The beauty
+      // pass discards those texels, so GTAO ends up darkening sky/background
+      // that shows through — distant canopies sprout translucent gray slabs
+      // that stack into black geometric blocks. Hide alpha-card meshes for the
+      // duration of the GTAO render only; real shadow maps keep foliage
+      // grounded on the ground and canopy interiors stay lit by lights.
+      {
+        const gtaoAny = this.gtaoPass as unknown as { render: (...a: unknown[]) => void };
+        const origGtaoRender = gtaoAny.render.bind(this.gtaoPass);
+        const engine = this;
+        gtaoAny.render = (...args: unknown[]) => {
+          const hidden: THREE.Object3D[] = [];
+          engine.scene.traverse((o) => {
+            if (o.userData && o.userData.arAlphaCards && o.visible) { o.visible = false; hidden.push(o); }
+          });
+          try { origGtaoRender(...args); }
+          finally { for (const o of hidden) o.visible = true; }
+        };
+      }
       this.composer.addPass(this.gtaoPass);
       this.composer.addPass(this.bloomPass);
       // r152+ materials skip tone mapping + sRGB for render targets; OutputPass
@@ -109,7 +140,7 @@ export class Engine {
 
     this.world = new World(this);
     this.grid = new TileGrid(this);
-    this.fog = new FogOfWar(this);
+    this.vision = new Vision(this);
     this.actors = new Actors(this);
     this.effects = new Effects(this);
     this.cameraRig = new CameraRig(this);
@@ -117,7 +148,47 @@ export class Engine {
 
     this.wire();
     window.addEventListener('resize', this.onResize);
+    // Boot-time program gate: hide the scene until the boot content's GPU
+    // programs (sky dome, atmosphere, terrain defaults, hero rig base…) have
+    // finished their background driver links in BOTH output color spaces
+    // (see acquireProgramsAsync). The player is still at the character forge
+    // during this window — nobody sees the world — and the first rendered
+    // frame never blocks on a shader link. Regions and kit meshes gate
+    // themselves the same way on arrival (TileGrid.addRegion / instanceAsset).
+    if (!this.lowgfx && typeof this.renderer.compile === 'function') {
+      acquireProgramsAsync(this, this.scene);
+    }
     (window as any).__AR_ENGINE__ = this; // QA/diagnostic hook
+
+    // ── program uniform-cache warmer ─────────────────────────────────────
+    // The last freeze class, profiler-pinned three times: a program's FIRST
+    // getUniforms() call builds WebGLUniforms, and its ACTIVE_UNIFORMS /
+    // LINK_STATUS queries force ANGLE/D3D to finish the background shader
+    // link synchronously (~100-300ms per program — 2-7s when a region burst
+    // drops a dozen programs into one frame). Gates on regions/kit meshes
+    // narrowed but never closed every first-draw path (deferred emits,
+    // actors, equipment…). This warmer closes them all: after every frame,
+    // any program whose async link has COMPLETED (isReady via
+    // KHR_parallel_shader_compile) gets its uniform cache built right here —
+    // cheap, because the link is already done — so no draw anywhere ever
+    // runs the constructor against an in-flight link.
+    const programs = this.renderer.info.programs as unknown as Array<{
+      __arWarm?: boolean; isReady?: () => boolean; getUniforms?: () => unknown;
+    }>;
+    const warmPrograms = () => {
+      try {
+        for (const p of programs) {
+          if (!p || p.__arWarm) continue;
+          if (typeof p.isReady === 'function' && !p.isReady()) continue;
+          p.__arWarm = true;
+          if (typeof p.getUniforms === 'function') p.getUniforms();
+        }
+      } catch { /* diagnostics only — never break the frame */ }
+    };
+    const warmTimer = window.setInterval(warmPrograms, 80);
+    window.addEventListener('beforeunload', () => window.clearInterval(warmTimer));
+    const prevDispose = this.dispose.bind(this);
+    this.dispose = () => { window.clearInterval(warmTimer); prevDispose(); };
   }
 
   private wire() {
@@ -144,8 +215,7 @@ export class Engine {
         if (previous !== undefined && previous !== door.open) playSfx('door');
         this.doorOpenByWall.set(door.wallIndex, door.open);
       }
-      const map = this.grid.syncDoorStates(doors);
-      if (map) this.fog.syncDoorStates(map);
+      this.grid.syncDoorStates(doors);
     });
     Bus.on(EV.TOKENS_SYNC, (tokens: any[]) => {
       // bind BEFORE syncing — even if a token figure throws, controls + camera
@@ -171,8 +241,56 @@ export class Engine {
       };
       const sound = sounds[f.action?.anim];
       if (sound) playSfx(sound);
+      this.applyCombatJuice(f);
     });
     Bus.on(EV.SFX, (s: any) => { if (s?.name) playSfx(s.name, s.volume); });
+    // P2.6: dice-tray audio — attack rolls clatter; nat 20/1 get fanfare stingers
+    Bus.on(EV.ROLL, (r: any) => {
+      const tag = String(r?.tag || '');
+      if (/damage/i.test(tag)) return;               // damage rolls stay silent (impact sounds carry it)
+      playSfx('dice');
+      if (/attack/i.test(tag) && r?.nat === 20) playSfx('crit-success', 0.7);
+      else if (/attack/i.test(tag) && r?.nat === 1) playSfx('crit-fail', 0.7);
+    });
+  }
+
+  /** P2.6 combat juice: float damage/heal numbers + typed impact VFX from the
+   *  fx:action result payload (server already broadcasts totals + types). */
+  private applyCombatJuice(f: any) {
+    const r = f?.result;
+    if (!r) return;
+    const targetId = f.action?.targetId || f.actorId;
+    const shots: any[] = Array.isArray(r.attacks)
+      ? r.attacks.map((s: any) => s?.damage).filter(Boolean)
+      : (r.damage ? [r.damage] : []);
+    let n = 0;
+    for (const dmg of shots) {
+      const total = Number(dmg?.total);
+      if (!Number.isFinite(total) || total <= 0) continue;
+      const anchor = this.actors.anchorWorld(targetId);
+      if (!anchor) continue;
+      anchor.x += (Math.random() - 0.5) * 2.4;                       // spread stacked numbers
+      anchor.y += 0.4 + n * 0.7;
+      n++;
+      const kind = dmg.crit ? 'crit' : 'dmg';
+      this.effects.floatText(anchor, String(Math.round(total)), kind, DMG_TEXT_COLOR[String(dmg.type || '').toLowerCase()]);
+      this.effects.impact(anchor, String(dmg.type || ''));
+      const elem = ELEMENT_SFX[String(dmg.type || '').toLowerCase()];
+      if (elem) playSfx(elem, 0.8);
+    }
+    const heal = Number(r.healing?.total);
+    if (Number.isFinite(heal) && heal > 0) {
+      const anchor = this.actors.anchorWorld(targetId);
+      if (anchor) {
+        anchor.y += 0.4;
+        this.effects.floatText(anchor, '+' + Math.round(heal), 'heal');
+        this.effects.impact(anchor, 'healing');
+      }
+    }
+    if (f.action?.anim === 'miss' && !shots.length) {
+      const anchor = this.actors.anchorWorld(targetId);
+      if (anchor) this.effects.floatText(anchor, 'miss', 'miss');
+    }
   }
 
   loadMap(map: MapDef) {
@@ -190,7 +308,6 @@ export class Engine {
     this.themeRegionId = null;
     this.doorOpenByWall.clear();
     this.grid.build(map);
-    this.fog.build(map);
     this.actors.clearAll();
     this.world.onMapTheme(map);
     this.areaMusic = getAreaTileSet(map).ambience === 'town' ? 'town' : 'crypt';
@@ -248,7 +365,6 @@ export class Engine {
       }
     }
     this.grid.retainRegions(keep);
-    this.fog.retainRegions(keep);
     this.syncWorldProbe();
   }
 
@@ -275,7 +391,7 @@ export class Engine {
         biome: r.map.biomes?.cells ?? null,
         kinds: r.map.biomes?.kinds ?? [],
         water, road,
-        explored: this.fog.exploredFor(r.id),
+        explored: null,   // P3.13: fog of war removed — minimap renders fully revealed
       });
     }
     worldProbe.regions = regions;
@@ -316,7 +432,7 @@ export class Engine {
     this.grid.update(dt);
     this.controls.update(dt);
     this.actors.update(dt, this.timeAccum);
-    this.fog.update(dt);
+    this.vision.update(dt);
     this.effects.update(dt);
     this.cameraRig.update(dt);
     if (this.composer) {

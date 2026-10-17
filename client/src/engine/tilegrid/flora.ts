@@ -1,19 +1,50 @@
 // tilegrid/flora.ts — grassland + meadow flora build pass.
 // Extracted from TileGrid.ts; now owns the grass-type soft blend, the
 // camera-distance density falloff, and the meadow forb/shrub layer.
+//
+// Secondary grass decision (user ruling): the kit grass models read wrong next
+// to the wind-animated carpet and never swayed with it, so the wild-grass
+// tussock layer is BACK on its original procedural geometry riding the SAME
+// wind shader as the carpet — both grass types sway together again. Kit models
+// still cover the meadow forbs (daisies/buttercups/violets) and the low shrubs;
+// the crimson-leaved Bush_Common is reserved for autumn accents and no longer
+// spawns in green meadows.
+//
+// Wave 1.5 (user feedback round):
+//  - flower splat: dense wildflower country (flowerField top band) suppresses
+//    the grass carpet inside the zone and grows tight single-species clusters;
+//    outside it flowers appear only as sporadic individuals. Flowers are 2x
+//    their old scale so they read at distance. Feedback round: the splat was
+//    far too frequent (large swathes everywhere) — the zone threshold moved
+//    0.635 → 0.762, which cuts splat coverage from ~22% of meadow country to
+//    ~5% (user target 5%), measured by Monte-Carlo over the exact field.
+//  - grass density is noise-modulated (lush pockets vs nibbled ground, mean
+//    ~0.8x of the old uniform fill) and tall-grass patches grow at ~2x height.
+//
+// IMPORTANT: every asset emit (immediate or deferred via whenAssetsReady)
+// targets the REGION GROUP captured below — grid.group mutates as regions
+// stream, so touching grid.group from a deferred callback would pile this
+// region's instances into whatever region built last (the origin-cluster bug).
 // grid: TileGrid — shared build state (group, colliders, materials, uniforms).
 
 import * as THREE from 'three';
 import type { TileGrid } from '../TileGrid';
 import type { MapDef } from '../types';
 import { hash2 } from '../materials';
-import { CELL, dirtField, wildGrassField, grassBlendField, flowerField, shrubField } from './shared';
-import { makeTussockGeometry, makeMeadowFlowerGeometry, makeShrubGeometry } from './geo';
+import { CELL, dirtField, wildGrassField, grassBlendField, flowerField, shrubField, grassDensityField, tallGrassField } from './shared';
+import { makeTussockGeometry } from './geo';
+import { scatterAsset, whenAssetsReady, assetsReady } from '../assets';
 
 interface GrassClump { x: number; z: number; y: number; scaleXZ: number; scaleY: number; color: number }
+
+/** One 160ft grass cell: chunk-space center/radius (region-local ft) + the
+ *  clump/tussock InstancedMeshes that live in it. Stored on the region
+ *  group's userData so its lifecycle rides region teardown for free. */
+interface GrassChunkDesc { x: number; z: number; r: number; meshes: THREE.InstancedMesh[] }
 interface FloraItem { x: number; y: number; z: number; s: number; ry: number; tint: number }
 
 export function buildGrassland(grid: TileGrid, map: MapDef) {
+  const group = grid.group;   // this region's group — captured for deferred emits
   const biomeCells = map.biomes?.cells;
   const kinds = map.biomes?.kinds;
   if (!biomeCells || !kinds || biomeCells.length !== map.size.w * map.size.h) return;
@@ -42,14 +73,30 @@ export function buildGrassland(grid: TileGrid, map: MapDef) {
     const cell = grid.key(x, z), biome = kinds[biomeCells[z * map.size.w + x]];
     if ((biome !== 'meadow' && biome !== 'forest') ||
         road.has(cell) || water.has(cell) || wall.has(cell)) continue;
+    // world cell center — the flower/density/tall fields are world-anchored so
+    // patches flow across region seams instead of repeating per region
+    const cwx = orgX + x + 0.5, cwz = orgZ + z + 0.5;
     const density = hash2(x, z, 207);
-    const count = biome === 'meadow'
+    // Flower splat: dense wildflower country suppresses the grass carpet
+    // entirely (both types) — the same field drives the forb layer below, so
+    // flower zones and grass-free zones always agree. 0.762 ≈ top 5% of the
+    // field (user ruling: splats were far too frequent; measured, not eyeballed).
+    const flowerZone = biome === 'meadow' && flowerField(cwx, cwz) > 0.762;
+    // Grass density is noise-modulated: lush pockets fill in, thin ground
+    // sparse out (0.4x..1.25x, mean ~0.8 of the old uniform fill) — total
+    // grass comes down a notch while coverage still reads full.
+    const densityMult = flowerZone ? 0 : 0.4 + grassDensityField(cwx, cwz) * 0.85;
+    // Tall-grass pockets: world-anchored areas where the carpet grows ~2x.
+    const tallPatch = biome === 'meadow' && !flowerZone && tallGrassField(cwx, cwz) > 0.635;
+    const baseCount = biome === 'meadow'
       ? grid.eng.lowgfx
         ? 7 + Math.floor(density * 6)
         : 15 + Math.floor(density * 12)
       : density > 0.28
         ? grid.eng.lowgfx ? 3 + Math.floor(density * 4) : 6 + Math.floor(density * 6)
         : 0;
+    // +dither term keeps the count quantization from banding the density field
+    const count = Math.floor(baseCount * densityMult + hash2(x, z, 215));
     for (let i = 0; i < count; i++) {
       const seed = i + z * map.size.w + x * 997;
       // Jitter widely across cell boundaries for seamless coverage without clumping
@@ -90,8 +137,9 @@ export function buildGrassland(grid: TileGrid, map: MapDef) {
       const palette = biome === 'meadow'
         ? [0x628442, 0x7b9b4b, 0x9aab5b, 0x526f3d, 0x8a9a50]
         : [0x45633c, 0x5f7945, 0x78834a];
-      const baseScale = (biome === 'meadow' ? 1.08 : 0.9) + hash2(seed, 43, 229) * 0.45;
-      const heightScale = baseScale * (0.82 + hash2(seed, 71, 241) * 0.48);
+      const tallMul = tallPatch ? 1.9 + hash2(seed, 101, 353) * 0.35 : 1;
+      const baseScale = ((biome === 'meadow' ? 1.08 : 0.9) + hash2(seed, 43, 229) * 0.45) * (tallMul > 1 ? 1.12 : 1);
+      const heightScale = baseScale * (0.82 + hash2(seed, 71, 241) * 0.48) * tallMul;
       clumps.push({
         x: px, z: pz, y: grid.terrainHeightAt(px, pz),
         scaleXZ: baseScale,
@@ -101,41 +149,75 @@ export function buildGrassland(grid: TileGrid, map: MapDef) {
     }
 
     // ── meadow forb & shrub layer (client PCG, world-anchored patches) ──
-    // Wildflowers bloom in flowerField clusters (daisy-dominant with
-    // buttercup and violet accents); low shrubs stand where shrubField
-    // rises. Both respect the dirt splat and stay off roads/water/walls.
+    // Wave 1.5 flower model (user ruling): similar flowers grow packed
+    // together — tight clusters dominated by ONE species with the odd accent
+    // bloom mixed in — plus sporadic individuals out in the grass, and never
+    // an even carpet across the whole meadow. The flowerField top band is the
+    // splat: inside it grass doesn't spawn (see the grass loop) and clusters
+    // do; outside it only the sporadic layer runs.
     if (biome === 'meadow') {
-      const cwx = orgX + x + 0.5, cwz = orgZ + z + 0.5;
       if (dirtField(cwx, cwz) < 0.60) {
         const fl = flowerField(cwx, cwz);
-        if (fl > 0.58) {
-          const n = Math.min(3, Math.floor((fl - 0.58) * 11 + hash2(x, z, 9413) * 1.7));
-          for (let i = 0; i < n; i++) {
-            const fSeed = x * 131 + z * 57 + i * 17;
-            const fx = (x + hash2(fSeed, 7, 9414)) * CELL;
-            const fz = (z + hash2(fSeed, 13, 9415)) * CELL;
-            const tc = grid.key(Math.floor(fx / CELL), Math.floor(fz / CELL));
-            if (road.has(tc) || water.has(tc) || wall.has(tc)) continue;
-            if (dirtField(orgX + fx / CELL, orgZ + fz / CELL) > 0.655) continue;
-            const roll = hash2(fSeed, 19, 9416);
-            const bucket = roll < 0.60 ? daisies : roll < 0.83 ? buttercups : violets;
+        if (fl > 0.762) {   // same 5% splat band the grass suppression reads
+          const clusters = hash2(x, z, 9421) < 0.70 ? 1 : hash2(x, z, 9422) < 0.25 ? 2 : 0;
+          for (let c = 0; c < clusters; c++) {
+            const cSeed = x * 977 + z * 331 + c * 91;
+            const cxp = (x + 0.2 + hash2(cSeed, 3, 9423) * 0.6) * CELL;
+            const czp = (z + 0.2 + hash2(cSeed, 5, 9424) * 0.6) * CELL;
+            const n = 4 + Math.floor(hash2(cSeed, 7, 9425) * 4);   // 4-7 packed blooms
+            const roll = hash2(cSeed, 11, 9426);
+            const bucket = roll < 0.50 ? daisies : roll < 0.78 ? buttercups : violets;
+            const accent = hash2(cSeed, 13, 9427) < 0.20
+              ? (roll < 0.78 ? violets : daisies)
+              : null;
+            for (let i = 0; i < n; i++) {
+              const fSeed = cSeed * 7 + i * 13;
+              const ang = hash2(fSeed, 17, 9428) * Math.PI * 2;
+              const rad = (0.08 + hash2(fSeed, 19, 9429) * 0.55) * CELL;
+              const fx = cxp + Math.cos(ang) * rad;
+              const fz = czp + Math.sin(ang) * rad;
+              const tc = grid.key(Math.floor(fx / CELL), Math.floor(fz / CELL));
+              if (road.has(tc) || water.has(tc) || wall.has(tc)) continue;
+              if (dirtField(orgX + fx / CELL, orgZ + fz / CELL) > 0.655) continue;
+              const target = i === n - 1 && accent ? accent : bucket;
+              // 2x the old scale (0.85..1.4 → 1.7..2.8) so blooms read at distance
+              target.push({
+                x: fx, y: grid.terrainHeightAt(fx, fz) + 0.02, z: fz,
+                s: 1.7 + hash2(fSeed, 23, 9430) * 1.1,
+                ry: hash2(fSeed, 29, 9431) * Math.PI * 2,
+                tint: 0.92 + hash2(fSeed, 31, 9432) * 0.14,
+              });
+            }
+          }
+        } else if (fl > 0.44 && hash2(x, z, 9433) < 0.06) {
+          // sporadic exception: a lone bloom out in open grass
+          const fSeed = x * 131 + z * 57;
+          const fx = (x + hash2(fSeed, 7, 9434)) * CELL;
+          const fz = (z + hash2(fSeed, 13, 9435)) * CELL;
+          const tc = grid.key(Math.floor(fx / CELL), Math.floor(fz / CELL));
+          if (!road.has(tc) && !water.has(tc) && !wall.has(tc) &&
+              dirtField(orgX + fx / CELL, orgZ + fz / CELL) <= 0.655) {
+            const roll = hash2(fSeed, 19, 9436);
+            const bucket = roll < 0.45 ? daisies : roll < 0.75 ? buttercups : violets;
             bucket.push({
               x: fx, y: grid.terrainHeightAt(fx, fz) + 0.02, z: fz,
-              s: 0.85 + hash2(fSeed, 23, 9417) * 0.55,
-              ry: hash2(fSeed, 29, 9418) * Math.PI * 2,
-              tint: 0.92 + hash2(fSeed, 31, 9419) * 0.14,
+              s: 1.9 + hash2(fSeed, 23, 9437) * 1.0,
+              ry: hash2(fSeed, 29, 9438) * Math.PI * 2,
+              tint: 0.92 + hash2(fSeed, 31, 9439) * 0.14,
             });
           }
         }
         const sf = shrubField(cwx, cwz);
-        if (sf > 0.72 && hash2(x, z, 9513) < (sf - 0.72) * 4.2) {
+        // density halved (4.2 → 2.1): the asset reads poorly en masse, so
+        // patches keep their shape with roughly half the shrubs per cell.
+        if (sf > 0.72 && hash2(x, z, 9513) < (sf - 0.72) * 2.1) {
           const sx = (x + 0.15 + hash2(x, z, 9514) * 0.7) * CELL;
           const sz = (z + 0.15 + hash2(x, z, 9515) * 0.7) * CELL;
           const tc = grid.key(Math.floor(sx / CELL), Math.floor(sz / CELL));
           if (!road.has(tc) && !water.has(tc) && !wall.has(tc)) {
             shrubs.push({
               x: sx, y: grid.terrainHeightAt(sx, sz) - 0.03, z: sz,
-              s: 0.85 + hash2(x, z, 9516) * 0.75,
+              s: 0.72 + hash2(x, z, 9516) * 1.0,
               ry: hash2(x, z, 9517) * Math.PI * 2,
               tint: 0.88 + hash2(x, z, 9518) * 0.20,
             });
@@ -247,73 +329,123 @@ export function buildGrassland(grid: TileGrid, map: MapDef) {
       #endif`,
     );
   };
-  material.customProgramCacheKey = () => 'ashenreach-instanced-grass-wind-v3';
-  const mesh = new THREE.InstancedMesh(geometry, material, clumps.length);
-  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-  const object = new THREE.Object3D(), color = new THREE.Color();
-  clumps.forEach((clump, index) => {
-    object.position.set(clump.x, clump.y, clump.z);
-    object.rotation.y = hash2(index, 67, 239) * Math.PI * 2;
-    object.scale.set(clump.scaleXZ, clump.scaleY, clump.scaleXZ);
-    object.updateMatrix();
-    mesh.setMatrixAt(index, object.matrix);
-    color.setHex(clump.color);
-    mesh.setColorAt(index, color);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.castShadow = false;
-  mesh.receiveShadow = true;
-  grid.group.add(mesh);
+  material.customProgramCacheKey = () => 'ashenreach-instanced-grass-wind-v4';
 
-  // Wild-grass tussocks share the wind-animated grass material so both grass
-  // types sway together; only the geometry and instance colors differ.
-  if (tussocks.length) {
-    const tussockMesh = new THREE.InstancedMesh(makeTussockGeometry(grid), material, tussocks.length);
-    tussockMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    const tObj = new THREE.Object3D(), tColor = new THREE.Color();
-    tussocks.forEach((t, index) => {
-      tObj.position.set(t.x, t.y, t.z);
-      tObj.rotation.y = hash2(index, 67, 239) * Math.PI * 2;
-      tObj.scale.set(t.scaleXZ, t.scaleY, t.scaleXZ);
-      tObj.updateMatrix();
-      tussockMesh.setMatrixAt(index, tObj.matrix);
-      tColor.setHex(t.color);
-      tussockMesh.setColorAt(index, tColor);
-    });
-    tussockMesh.instanceMatrix.needsUpdate = true;
-    if (tussockMesh.instanceColor) tussockMesh.instanceColor.needsUpdate = true;
-    tussockMesh.castShadow = false;
-    tussockMesh.receiveShadow = true;
-    grid.group.add(tussockMesh);
-  }
-
-  // Meadow forbs & shrubs ride the same wind material — they inherit the gust
-  // sway and the distance density falloff for free. Vertex colors carry the
-  // petal/center/foliage shading; instance colors only modulate brightness.
-  const floraMesh = (geo: THREE.BufferGeometry, items: FloraItem[]) => {
-    if (!items.length) { geo.dispose(); return; }
-    const im = new THREE.InstancedMesh(geo, material, items.length);
-    im.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    const o = new THREE.Object3D(), c = new THREE.Color();
-    items.forEach((it, index) => {
-      o.position.set(it.x, it.y, it.z);
-      o.rotation.set(0, it.ry, 0);
-      o.scale.setScalar(it.s);
-      o.updateMatrix();
-      im.setMatrixAt(index, o.matrix);
-      c.setRGB(it.tint, it.tint, it.tint);
-      im.setColorAt(index, c);
-    });
-    im.instanceMatrix.needsUpdate = true;
-    if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    im.castShadow = false;
-    im.receiveShadow = true;
-    grid.group.add(im);
+  // ── chunked grass emission (GPU budget fix) ──────────────────────────────
+  // A whole-region grass InstancedMesh owns a region-wide bounding sphere
+  // (~460ft), so the frustum can never reject it: every streamed region
+  // submitted ALL of its blades every frame (~150k instances × 24 tris), and
+  // the shader's density collapse only flattens far blades to zero-area
+  // triangles AFTER they run the full vertex pipeline. Measured on-device:
+  // 35M+ triangles submitted per frame, 2-7s main-thread stalls whenever
+  // regions streamed, p95 frame > 33ms even for a static scene. 160ft chunks
+  // give each mesh a tight instance-union sphere the frustum CAN reject, and
+  // updateGrassChunkVisibility() hard-hides chunks whose blades the shader
+  // fades to nothing anyway (past 265+30ft, plus chunk radius + margin).
+  // The shader falloff is untouched — visible grass reads the same; we only
+  // stop submitting what nobody can see.
+  const GRASS_CHUNK_FT = 160; // 32 tiles per chunk cell
+  const chunkMeta = new Map<string, GrassChunkDesc>();
+  const chunkFor = (x: number, z: number): GrassChunkDesc => {
+    const cx = Math.floor(x / GRASS_CHUNK_FT), cz = Math.floor(z / GRASS_CHUNK_FT);
+    const key = cx + ':' + cz;
+    let c = chunkMeta.get(key);
+    if (!c) {
+      c = { x: (cx + 0.5) * GRASS_CHUNK_FT, z: (cz + 0.5) * GRASS_CHUNK_FT, r: GRASS_CHUNK_FT * 0.7071, meshes: [] };
+      chunkMeta.set(key, c);
+    }
+    return c;
   };
-  // daisy (dominant), buttercup, violet — proportions set in the spawn loop
-  floraMesh(makeMeadowFlowerGeometry(grid, [0.96, 0.96, 0.93], [0.98, 0.80, 0.28], 0.52, 0.17, 6), daisies);
-  floraMesh(makeMeadowFlowerGeometry(grid, [0.95, 0.78, 0.20], [0.85, 0.55, 0.12], 0.42, 0.13, 5), buttercups);
-  floraMesh(makeMeadowFlowerGeometry(grid, [0.60, 0.42, 0.86], [0.92, 0.76, 0.32], 0.34, 0.11, 5), violets);
-  floraMesh(makeShrubGeometry(grid), shrubs);
+  const emitChunked = (list: GrassClump[], geo: THREE.BufferGeometry | null) => {
+    if (!list.length || !geo) return;
+    const bins = new Map<GrassChunkDesc, GrassClump[]>();
+    for (const it of list) {
+      const c = chunkFor(it.x, it.z);
+      const arr = bins.get(c);
+      if (arr) arr.push(it); else bins.set(c, [it]);
+    }
+    const obj = new THREE.Object3D(), col = new THREE.Color();
+    for (const [c, items] of bins) {
+      const mesh = new THREE.InstancedMesh(geo, material, items.length);
+      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      items.forEach((it, index) => {
+        obj.position.set(it.x, it.y, it.z);
+        obj.rotation.y = hash2(index, 67, 239) * Math.PI * 2;
+        obj.scale.set(it.scaleXZ, it.scaleY, it.scaleXZ);
+        obj.updateMatrix();
+        mesh.setMatrixAt(index, obj.matrix);
+        col.setHex(it.color);
+        mesh.setColorAt(index, col);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      mesh.computeBoundingSphere();  // tight per-chunk sphere for frustum culling
+      mesh.visible = false;          // updateGrassChunkVisibility opens these up
+      group.add(mesh);
+      c.meshes.push(mesh);
+    }
+  };
+  emitChunked(clumps, geometry);
+  // Wild-grass tussocks share the wind-animated grass material so both grass
+  // types sway together; only the geometry and instance colors differ. One
+  // shared geometry per region — chunks differ only by their instances.
+  emitChunked(tussocks, tussocks.length ? makeTussockGeometry(grid) : null);
+  if (chunkMeta.size) (group.userData as Record<string, unknown>).grassChunks = [...chunkMeta.values()];
+
+  // ── asset flora: meadow forbs + low shrubs (cooked kits) ───────────────
+  // Kit models are static (no wind); per-instance tints keep the palette
+  // variation. Deferred until the kit parse lands; dropped cleanly if the
+  // region was torn down meanwhile — and always emitted into the captured
+  // region group, never the mutating grid.group.
+  const tintHex = (hex: number, j = 1): [number, number, number] => {
+    const c = new THREE.Color(hex);
+    return [c.r * j, c.g * j, c.b * j];
+  };
+  const emitAssetFlora = () => {
+    // meadow forbs — daisy-dominant with buttercup and violet accents
+    const forb = (items: FloraItem[], models: string[], salt: number) => {
+      if (items.length) {
+        scatterAsset(grid, models,
+          items.map((it) => ({ x: it.x, y: it.y, z: it.z, s: it.s, ry: it.ry, tint: [it.tint, it.tint, it.tint] as [number, number, number] })),
+          { height: 0.85, castShadow: false, group }, salt);
+      }
+    };
+    // daisy (dominant), buttercup, violet — proportions set in the spawn loop
+    forb(daisies, ['Flower_1_Clump', 'Flower_2_Clump', 'Flower_1'], 21);
+    forb(buttercups, ['Flower_3_Clump', 'Flower_4_Clump', 'Flower_2'], 22);
+    forb(violets, ['Flower_5_Clump', 'Flower_3_Group'], 23);
+    // low woody shrubs — green foliage only. Bush / Bush_Flowers replaced the
+    // deleted Bush_Large/Bush_Small family (user ruling); Bush_Common_Flowers
+    // stays (Bush_Common itself is crimson-leaved and autumn-reserved).
+    if (shrubs.length) {
+      scatterAsset(grid, ['Bush', 'Bush_Flowers', 'Bush_Common_Flowers'],
+        shrubs.map((it) => ({ x: it.x, y: it.y, z: it.z, s: it.s, ry: it.ry, tint: [it.tint, it.tint, it.tint] as [number, number, number] })),
+        { height: 3.2, sink: 0.12, castShadow: false, group }, 24);
+    }
+  };
+  if (assetsReady()) emitAssetFlora();
+  else whenAssetsReady(() => { if (group.parent) emitAssetFlora(); });
+}
+
+// Per-frame chunk gate: hide grass chunks whose every blade the shader fades
+// to zero anyway (uGrassCull 265ft + its 30ft fade tail, plus safety margin,
+// plus the chunk radius so a partially-in-range cell never pops). Runs from
+// TileGrid.update right after the grass focus uniform refresh. Regions
+// without grass (dungeons, towns) carry no grassChunks and cost one Map hop.
+const GRASS_GATE_FT = 265 + 30 + 24;
+export function updateGrassChunkVisibility(grid: TileGrid) {
+  const fx = grid.grassFocus.value.x, fz = grid.grassFocus.value.z;
+  for (const region of grid.regions.values()) {
+    const chunks = region.group.userData?.grassChunks as GrassChunkDesc[] | undefined;
+    if (!chunks || !chunks.length) continue;
+    const ox = region.origin.x, oz = region.origin.z;
+    for (const c of chunks) {
+      const dx = ox + c.x - fx, dz = oz + c.z - fz;
+      const reach = GRASS_GATE_FT + c.r;
+      const keep = dx * dx + dz * dz <= reach * reach;
+      for (const m of c.meshes) { if (m.visible !== keep) m.visible = keep; }
+    }
+  }
 }

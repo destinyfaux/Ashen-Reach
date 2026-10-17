@@ -13,6 +13,13 @@ export interface TokenState {
   initiative?: number;
   actionUsed?: boolean;
   bonusUsed?: boolean;
+  /** P3.13: full 5E sheet rides on player tokens (server GameManager.attachPlayer).
+   *  Vision reads sheet.darkvisionFt + sheet.lightSource for the light system. */
+  sheet?: {
+    darkvisionFt?: number | null;
+    lightSource?: string | null;
+    [k: string]: unknown;
+  } | null;
 }
 export interface ChatMsg { from: string; color?: string; text: string; t: number; }
 export interface DoorState {

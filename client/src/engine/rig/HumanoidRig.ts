@@ -447,6 +447,8 @@ export class HumanoidRig {
   innerGlow: THREE.Sprite | null = null;    // wraith core glow
   private chains: ClothChain[] = [];
   private bodyMats: THREE.MeshStandardMaterial[] = []; // per-actor clones (dissolve)
+  private flash = 0;                                   // P2.6 hit flash energy
+  private flashOrig: { mat: THREE.MeshStandardMaterial; c: THREE.Color; i: number }[] | null = null;
   private skinned: THREE.SkinnedMesh[] = [];
 
   private static bodyCache = new Map<string, CachedBody>();
@@ -1013,6 +1015,36 @@ export class HumanoidRig {
   /** cloth chains: wind = ambient breeze + motion-relative airflow (world ft/s) */
   update(dt: number, windX: number, windZ: number, windUp = 0) {
     for (const c of this.chains) c.update(dt, windX, windZ, windUp, this.isWraith ? 2.2 : 3.4);
+    this.updateFlash(dt);
+  }
+
+  /** P2.6 hit flash: white emissive surge that decays back to the rest pose.
+   *  k = 0..1.2 (crits brighter). Captures each material's original emissive
+   *  once, lerps toward white, restores when the energy drains. */
+  setFlash(k: number) {
+    this.flash = Math.max(this.flash, Math.min(1.2, k));
+  }
+
+  private updateFlash(dt: number) {
+    if (this.flash <= 0) return;
+    if (!this.flashOrig) {
+      this.flashOrig = this.bodyMats.map(m => ({ mat: m, c: m.emissive.clone(), i: m.emissiveIntensity }));
+    }
+    this.flash = Math.max(0, this.flash - dt * 3.4);
+    const k = Math.min(1, this.flash);
+    if (k <= 0) {
+      for (const o of this.flashOrig) { o.mat.emissive.copy(o.c); o.mat.emissiveIntensity = o.i; }
+      this.flashOrig = null;                     // re-capture next flash
+      return;
+    }
+    for (const o of this.flashOrig) {
+      o.mat.emissive.setRGB(
+        o.c.r + (1 - o.c.r) * k,
+        o.c.g + (1 - o.c.g) * k,
+        o.c.b + (1 - o.c.b) * k,
+      );
+      o.mat.emissiveIntensity = o.i + (1.6 - o.i) * k;
+    }
   }
 
   setDissolve(t: number) {

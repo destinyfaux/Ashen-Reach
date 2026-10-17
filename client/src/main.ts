@@ -22,6 +22,7 @@ import type { PanelHandle } from './ui/escape';
 import { mountSheet } from './ui/sheet';
 import { mountInventory } from './ui/inventory';
 import { setMusicScene } from './audio/music';
+import { primeAssets } from './engine/assets';
 
 const params = new URLSearchParams(location.search);
 const m = location.pathname.match(/^\/j\/([a-z0-9]+)/i);
@@ -33,6 +34,10 @@ const app = document.getElementById('app')!;
 
 // boot splash (index.html) is replaced by the first real screen
 document.getElementById('boot-splash')?.remove();
+
+// Wave 1 asset pipeline: start fetching the cooked kit bundles immediately —
+// they land during the join screen and parse once the engine boots a renderer.
+if (!headless) primeAssets();
 
 mountScreens(app, { invite, dmKey: dmKey || undefined, headless });
 

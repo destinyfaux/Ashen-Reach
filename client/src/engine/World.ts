@@ -244,7 +244,19 @@ export class World {
   private deadlandFog = false;
   private skyDome!: THREE.Mesh;
   private torches: Torch[] = [];
-  private washLights: THREE.PointLight[] = [];
+  // Fixed-size ambient point-light pools. Region lights (braziers, hanging
+  // lanterns) used to be created/destroyed per region — every count change
+  // re-bakes numPointLights into every material program, so each ring
+  // crossing forced a full program recompile whose first draws then block
+  // the main thread on the D3D driver link (2-7s stalls, profiler-confirmed
+  // inside WebGLProgram.getUniforms). The pools keep the total point-light
+  // count CONSTANT for the whole session: slots are reassigned per region,
+  // unused slots sit at intensity 0 (they still count toward the defines —
+  // that is exactly what stabilizes the program cache).
+  private readonly FLAME_POOL = 12;
+  private readonly WASH_POOL = 12;
+  private flamePool: THREE.PointLight[] = [];
+  private washPool: THREE.PointLight[] = [];
   private lanterns: THREE.Group[] = [];
   private embersMeta: { hx: number; hy: number; hz: number; r: number; ph: number; sp: number }[] = [];
   private motesMeta: MoteMeta[] = [];
@@ -257,6 +269,7 @@ export class World {
   private rainTarget = 0;
   private weather = 'clear';
   private isCrypt = true;
+  private lastNight = 0;   // P3.13: last applied nightFactor (1 in crypts) — Vision reads this
   private thunderT = 6;
   private fireSfxT = 2;
   private flashEl: HTMLDivElement;
@@ -281,6 +294,19 @@ export class World {
     this.rim = new THREE.DirectionalLight(0x5a8a86, 0.32);
     this.rim.position.set(60, 70, -90);
     eng.scene.add(this.rim);
+    // fixed ambient point-light pools (constant numPointLights — see fields)
+    for (let i = 0; i < this.FLAME_POOL; i++) {
+      const l = new THREE.PointLight(0xffffff, 0, 30, 2);
+      l.castShadow = false;
+      eng.scene.add(l);
+      this.flamePool.push(l);
+    }
+    for (let i = 0; i < this.WASH_POOL; i++) {
+      const l = new THREE.PointLight(0xffffff, 0, 60, 2);
+      l.castShadow = false;
+      eng.scene.add(l);
+      this.washPool.push(l);
+    }
 
     this.buildStars();
     this.buildRain();
@@ -334,6 +360,7 @@ export class World {
         uSunsetGlow: { value: new THREE.Color(0xfc5438) },
         uSunsetAmt: { value: 0.0 },
         uNightFactor: { value: 0.0 },
+        uCelestial: { value: 1.0 },   // 0 inside dungeons — no stars/moon/sun on an enclosed sky
         uTime: { value: 0 },
         uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
         uMoonDirection: { value: new THREE.Vector3(0, -1, 0) },
@@ -358,6 +385,7 @@ export class World {
         uniform vec3 uSunsetGlow;
         uniform float uSunsetAmt;
         uniform float uNightFactor;
+        uniform float uCelestial;
         uniform float uTime;
         uniform vec3 uSunDirection;
         uniform vec3 uMoonDirection;
@@ -527,8 +555,8 @@ export class World {
           vec3 sunsetAtmosphere = uSunsetGlow * (sunsetBelt * (0.55 + 0.95 * pow(sunAzimuth, 2.0)) + sunsetDome * pow(sunAzimuth, 4.0) * 0.85);
           sky += sunsetAtmosphere * uSunsetAmt;
 
-          // 3. Stars and Milky Way
-          sky += renderStars(dir, uNightFactor);
+          // 3. Stars and Milky Way (dungeons: uCelestial = 0 — enclosed sky)
+          sky += renderStars(dir, uNightFactor) * uCelestial;
 
           // 4. Procedural Sun and Moon Discs (occluded by clouds)
           vec3 sunRadiance = renderSun(dir, normSunDir, uSunColor);
@@ -585,7 +613,7 @@ export class World {
 
           // Celestial light is transmitted through clouds (Sun/Moon are occluded behind clouds)
           float cloudTransmittance = 1.0 - totalCloudAlpha;
-          sky += (sunRadiance + moonRadiance) * cloudTransmittance;
+          sky += (sunRadiance + moonRadiance) * cloudTransmittance * uCelestial;
 
           if (totalCloudAlpha > 0.002) {
             sky = mix(sky, litCloud, totalCloudAlpha);
@@ -918,6 +946,11 @@ export class World {
     this.applyWeather();
   }
 
+  /** P3.13: how dark is the world right now (0 day → 1 night/dungeon). */
+  get nightFactor(): number {
+    return this.lastNight;
+  }
+
   private applyWeather() {
     const w = WEATHERS[this.weather] || WEATHERS.clear;
     if (this.isCrypt) {
@@ -942,25 +975,11 @@ export class World {
     this.buildCloudShadows(map, originFt);
 
     const anchors: { x: number; y: number; z: number }[] = [];
+    let slot = 0;
     for (const l of lights) {
       const col = new THREE.Color(l.color);
       const braz = l.flicker;                 // flicker = brazier; static = hanging lantern
       const ly = braz ? 5.1 : 8.55;
-      const light = new THREE.PointLight(col, braz ? 320 : 190, l.radiusFt * 1.9, 2);
-      light.position.set(l.x * CELL, ly, l.z * CELL);
-      light.castShadow = braz && !this.eng.lowgfx;  // only braziers cast (perf)
-      if (light.castShadow) {
-        light.shadow.mapSize.set(512, 512);
-        light.shadow.bias = -0.004;
-        light.shadow.normalBias = 0.6;
-        (light.shadow.camera as THREE.PerspectiveCamera).near = 0.5;
-      }
-      this.eng.scene.add(light);
-      // wide soft wash — reads like bounce off the walls
-      const wash = new THREE.PointLight(col, braz ? 85 : 60, l.radiusFt * 3.2, 2);
-      wash.position.set(l.x * CELL, ly + 2.6, l.z * CELL);
-      this.eng.scene.add(wash);
-      this.washLights.push(wash);
       // flame billboard: white-hot core → ember edges (crypt teal for lanterns)
       const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
         map: flameSprite(braz ? 0 : 1), transparent: true, opacity: 0.96,
@@ -983,8 +1002,29 @@ export class World {
         : this.buildShaft(l.x * CELL, l.z * CELL, 8.3, 8.1, 1.0, 2.6, 0x7fd4c8, 0.042);
       if (!braz) this.buildHangingLantern(l);
       else anchors.push({ x: l.x * CELL, y: 5.6, z: l.z * CELL });
-      this.torches.push({ light, base: braz ? 330 : 195, phase: Math.random() * 9, sprite, core, w, h, shaft, shaftBase: braz ? 0.05 : 0.042 });
+      // Fixed light pool: reassign slots instead of creating/destroying —
+      // the total point-light count (and with it every program's baked
+      // numPointLights define) never changes across region streaming.
+      // No castShadow on pool lights: shadow counts must stay constant too
+      // (the hero's torch is the single stable shadow-casting point light).
+      if (slot < this.FLAME_POOL) {
+        const light = this.flamePool[slot];
+        light.color.copy(col);
+        light.distance = l.radiusFt * 1.9;
+        light.position.set(l.x * CELL, ly, l.z * CELL);
+        const wash = this.washPool[slot];
+        wash.color.copy(col);
+        wash.distance = l.radiusFt * 3.2;
+        wash.position.set(l.x * CELL, ly + 2.6, l.z * CELL);
+        wash.intensity = braz ? 85 : 60;
+        this.torches.push({ light, base: braz ? 330 : 195, phase: Math.random() * 9, sprite, core, w, h, shaft, shaftBase: braz ? 0.05 : 0.042 });
+        slot++;
+      }
+      // over pool budget: the flame billboard + shaft still read, no dynamic light
     }
+    // park unused slots at zero (they still count toward numPointLights)
+    for (; slot < this.FLAME_POOL; slot++) this.flamePool[slot].intensity = 0;
+    for (let s = slot; s < this.WASH_POOL; s++) this.washPool[s].intensity = 0;
     this.buildEmbers(anchors);
     this.buildMotes(lights);
     this.applyWeather();
@@ -1112,17 +1152,19 @@ export class World {
 
   private clearAtmosphere() {
     for (const t of this.torches) {
-      this.eng.scene.remove(t.light); this.eng.scene.remove(t.sprite); this.eng.scene.remove(t.core);
-      t.light.dispose(); (t.sprite.material as THREE.SpriteMaterial).dispose();
+      this.eng.scene.remove(t.sprite); this.eng.scene.remove(t.core);
+      (t.sprite.material as THREE.SpriteMaterial).dispose();
       (t.core.material as THREE.SpriteMaterial).dispose();
       if (t.shaft) {
         this.eng.scene.remove(t.shaft);
         t.shaft.geometry.dispose(); (t.shaft.material as THREE.Material).dispose();
       }
+      // pooled light: park it, never remove/dispose — the total point-light
+      // count must stay constant across regions (see pool field comment)
+      t.light.intensity = 0;
     }
     this.torches = [];
-    for (const w of this.washLights) { this.eng.scene.remove(w); w.dispose(); }
-    this.washLights = [];
+    for (const w of this.washPool) w.intensity = 0;
     for (const g of this.lanterns) {
       this.eng.scene.remove(g);
       g.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); });
@@ -1184,6 +1226,7 @@ export class World {
 
     // Continuous 24-hour atmospheric interpolation
     const atmo = interpolateSky(hour);
+    this.lastNight = this.isCrypt ? 1 : atmo.nightFactor;
     const wConfig = WEATHERS[this.weather] || WEATHERS.clear;
     const cloudCoverage = wConfig.cloudCoverage ?? 0.38;
     const cloudDensity = wConfig.cloudDensity ?? 1.0;
@@ -1209,6 +1252,10 @@ export class World {
     skyUniforms.uSunsetGlow.value.setHex(atmo.sunsetGlow);
     skyUniforms.uSunsetAmt.value = this.isCrypt ? 0 : atmo.sunsetAmt;
     skyUniforms.uNightFactor.value = this.isCrypt ? 1 : atmo.nightFactor;
+    // dungeons show no celestial bodies: the dome collapses to the same
+    // near-black as scene bg + fog, so an enclosed room never shows a starry
+    // night sky or a daylight sun overhead
+    skyUniforms.uCelestial.value = this.isCrypt ? 0 : 1;
     skyUniforms.uCloudCoverage.value = cloudCoverage;
     skyUniforms.uCloudDensity.value = this.isCrypt ? 0 : cloudDensity;
     skyUniforms.uWindOffset.value.copy(this.cloudOffset);
@@ -1258,17 +1305,23 @@ export class World {
     );
     this.sun.target.position.set(focus.x, 0, focus.z);
     this.sun.color.setHex(this.isCrypt ? 0x2c2822 : activeColor);
-    this.sun.intensity = this.isCrypt ? 0.3 : activeIntensity;
     this.sun.castShadow = !this.isCrypt;
+
+    // ── P3.13 true darkness: global lights collapse to ~6% when dark.
+    // Dungeons (nightFactor pinned to 1) and overworld nights are actually
+    // dark now; map braziers/lanterns and the hero's Vision lights carve the
+    // local pools that make those places readable.
+    const globalKeep = this.isCrypt ? 0.06 : 1 - atmo.nightFactor * 0.94;
+    this.sun.intensity = (this.isCrypt ? 0.3 : activeIntensity) * globalKeep;
 
     // ── ambient & rim lighting
     this.rim.color.setHex(this.isCrypt ? 0x5a8a86 : atmo.rim);
-    this.rim.intensity = this.isCrypt ? 0.18 : (isDay ? 0.34 : 0.28);
+    this.rim.intensity = (this.isCrypt ? 0.18 : (isDay ? 0.34 : 0.28)) * globalKeep;
     this.hemi.color.setHex(this.isCrypt ? 0x36444c : atmo.hemiSky);
     this.hemi.groundColor.setHex(this.isCrypt ? 0x171310 : atmo.hemiGround);
-    this.hemi.intensity = this.isCrypt ? 0.32 : (isDay ? 0.88 : 0.48);
+    this.hemi.intensity = (this.isCrypt ? 0.32 : (isDay ? 0.88 : 0.48)) * globalKeep;
     this.ambient.color.setHex(this.isCrypt ? 0x6f7d82 : atmo.ambient);
-    this.ambient.intensity = this.isCrypt ? 0.3 : (isDay ? 0.80 : 0.44);
+    this.ambient.intensity = (this.isCrypt ? 0.3 : (isDay ? 0.80 : 0.44)) * globalKeep;
 
     // ── dynamic cloud shadows on landscape
     if (this.cloudShadowMat) {
@@ -1384,5 +1437,10 @@ export class World {
     }
   }
 
-  dispose() { this.flashEl.remove(); this.clearAtmosphere(); }
+  dispose() {
+    this.flashEl.remove(); this.clearAtmosphere();
+    for (const l of this.flamePool) { this.eng.scene.remove(l); l.dispose(); }
+    for (const l of this.washPool) { this.eng.scene.remove(l); l.dispose(); }
+    this.flamePool = []; this.washPool = [];
+  }
 }

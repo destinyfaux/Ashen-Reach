@@ -29,6 +29,8 @@ import { buildFloor, buildRoads, buildRoomDetails, buildWater } from './tilegrid
 import { buildDoors, buildWalls } from './tilegrid/walls';
 import { buildProps } from './tilegrid/props';
 import { buildExits } from './tilegrid/structures';
+import { updateGrassChunkVisibility } from './tilegrid/flora';
+import { acquireProgramsAsync } from './assets';
 
 export { CELL, WALL_H, normalizeHalfTile, isPointInHalfTile, addRotatedCollider } from './tilegrid/shared';
 export type { Collider, RegionHandle } from './tilegrid/shared';
@@ -131,7 +133,7 @@ export class TileGrid {
   regions = new Map<string, RegionHandle>();
   worldMode = false;
   focusRegionId: string | null = null;
-  private regionBuild = false;               // true while buildWorld fills a region group
+  regionBuild = false;               // true while buildWorld fills a region group (read by assets warm-guard)
 
   constructor(eng: Engine) {
     this.eng = eng;
@@ -179,10 +181,7 @@ export class TileGrid {
       this.grassMaterial?.dispose();
       this.grassMaterial = null;
       this.eng.scene.remove(this.group);
-      this.group.traverse((o) => {
-        const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-      });
+      this.disposeGroupObjects(this.group);
       this.group = new THREE.Group();
     }
     const origin = map.worldOriginFt || { x: map.region.rx * map.size.w * CELL, z: map.region.rz * map.size.h * CELL };
@@ -223,6 +222,16 @@ export class TileGrid {
     this.grassMaterial = null;
     this.regionBuild = false;
     this.eng.scene.add(group);
+    // First-draw stall guard: acquire this region's GPU programs in BOTH
+    // output color spaces (screen sRGB + composer linear — three keys a
+    // program per colorSpace, and a compile outside the composer only warms
+    // the screen variants; the composer-side first draw then froze 100-400ms
+    // per program on the D3D driver link, 2-7s per ring crossing) and reveal
+    // the region only once every link reports complete. The driver compiles
+    // in the background; no frame ever waits on a shader.
+    if (!this.eng.lowgfx && typeof this.eng.renderer.compile === 'function') {
+      acquireProgramsAsync(this.eng, group);
+    }
     this.regions.set(id, region);
     return region;
   }
@@ -231,13 +240,23 @@ export class TileGrid {
     const r = this.regions.get(id);
     if (!r) return;
     this.eng.scene.remove(r.group);
-    r.group.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
-    });
+    this.disposeGroupObjects(r.group);
     r.waterMaterial?.dispose();
     r.grassMaterial?.dispose();
     this.regions.delete(id);
+  }
+
+  /** Free per-mesh GPU buffers (instanced matrices/colors) + non-shared
+   *  geometry. Kit geometries (arShared) survive — the asset library owns
+   *  them for the session — but every InstancedMesh's instance buffers are
+   *  per-mesh and must go with the teardown. */
+  private disposeGroupObjects(group: THREE.Group) {
+    group.traverse((o) => {
+      const im = o as THREE.InstancedMesh;
+      if (im.isInstancedMesh) im.dispose();
+      const m = o as THREE.Mesh;
+      if (m.geometry && !m.geometry.userData.arShared) m.geometry.dispose();
+    });
   }
 
   /** Keep only the listed regions (prunes geometry beyond the stream ring). */
@@ -297,10 +316,7 @@ export class TileGrid {
       this.grassMaterial?.dispose();
       this.grassMaterial = null;
       this.eng.scene.remove(this.group);
-      this.group.traverse((o) => {
-        const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-      });
+      this.disposeGroupObjects(this.group);
       this.group = new THREE.Group();
     }
 
@@ -413,6 +429,7 @@ export class TileGrid {
     this.waterTime.value += dt;
     this.grassTime.value += dt;
     this.grassFocus.value.copy(this.eng.camera.position);
+    updateGrassChunkVisibility(this); // open/close 160ft grass chunks around the camera
     for (const [wallIndex, animation] of this.doorAnimations) {
       const leaf = this.doorLeaves.get(wallIndex);
       if (!leaf) { this.doorAnimations.delete(wallIndex); continue; }
