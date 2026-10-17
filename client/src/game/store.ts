@@ -53,6 +53,7 @@ export interface GameStore {
   connection: 'offline' | 'online' | 'reconnecting';
   pingMs: number | null;
   initiative: unknown | null;      // {order, turnIdx, round, movement} while combat is on
+  inviteCode: string | null;
   // actions
   setPhase: (p: Phase) => void;
   setJoined: (me: PlayerInfo, players: PlayerInfo[], tokens: TokenState[], mapName: string) => void;
@@ -97,6 +98,7 @@ export const useGame = createStore({
   connection: 'offline',
   pingMs: null,
   initiative: null,
+  inviteCode: null,
   setPhase: (p) => useGame.setState({ phase: p }),
   setJoined: (me, players, tokens, mapName) => useGame.setState({
     phase: 'playing', me, players, tokens, mapName,

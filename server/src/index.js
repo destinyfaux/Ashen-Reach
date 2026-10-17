@@ -3,6 +3,7 @@
 // REST endpoint, map JSON, and the /ws WebSocket endpoint (see ws.js).
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GameManager } from './GameManager.js';
@@ -161,18 +162,35 @@ const server = http.createServer(async (req, res) => {
       return res.end('405');
     }
 
+    if (pathname === '/favicon.ico') {
+      res.writeHead(204);
+      return res.end();
+    }
+
     if (pathname === '/') {
       return serveFile(res, INDEX);
     }
 
     // invite links (/j/<code>) and any extensionless route → SPA index
-    const hasExt = /\.[a-z0-9]+$/i.test(pathname);
-    if (!hasExt || pathname.startsWith('/j/')) {
+    let reqPath = pathname;
+    if (reqPath.startsWith('/j/')) {
+      const match = reqPath.match(/^\/j\/[^/]+(\/.*)?$/);
+      if (match && match[1]) {
+        // static asset requested relative to /j/<code>/ -> redirect to root asset path
+        reqPath = match[1];
+      } else {
+        // direct invite landing page /j/<code> or /j/<code>/
+        return serveFile(res, INDEX);
+      }
+    }
+
+    const hasExt = /\.[a-z0-9]+$/i.test(reqPath);
+    if (!hasExt) {
       return serveFile(res, INDEX);
     }
 
     // static asset from client/public (path-traversal safe)
-    const rel = path.normalize(pathname).replace(/^([/\\])+/, '');
+    const rel = path.normalize(reqPath).replace(/^([/\\])+/, '');
     const file = path.join(PUBLIC, rel);
     if (file.startsWith(PUBLIC) && fs.existsSync(file) && fs.statSync(file).isFile()) {
       return serveFile(res, file);
@@ -192,8 +210,25 @@ attachWs(server, gm);
 // tests never import index.js, so the world never simulates under assertions.
 gm.startAmbientTick?.();
 
+function getLocalIp() {
+  try {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name] || []) {
+        if (net.family === 'IPv4' && !net.internal) return net.address;
+      }
+    }
+  } catch { /* fallback */ }
+  return 'localhost';
+}
+
 server.listen(PORT, '0.0.0.0', () => {
+  const localIp = getLocalIp();
   console.log(`[ASHENREACH] server listening on http://localhost:${PORT}`);
-  console.log(`[ASHENREACH] invite: http://localhost:${PORT}/j/${gm.session.inviteCode}`);
-  console.log(`[ASHENREACH] dm:     http://localhost:${PORT}/?dm=${gm.dmKey}`);
+  console.log(`[ASHENREACH] local host invite: http://localhost:${PORT}/j/${gm.session.inviteCode}`);
+  if (localIp !== 'localhost') {
+    console.log(`[ASHENREACH] same Wi-Fi/LAN invite: http://${localIp}:${PORT}/j/${gm.session.inviteCode}`);
+  }
+  console.log(`[ASHENREACH] to host over the internet for friends at home: run 'npm run host'`);
+  console.log(`[ASHENREACH] dm: http://localhost:${PORT}/?dm=${gm.dmKey}`);
 });

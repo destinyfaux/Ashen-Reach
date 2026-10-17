@@ -102,6 +102,7 @@ export class GameManager {
     attachCombat(this);          // before setMap: first map load uses SRD spawns
     this.setMap(this.state.mapId);
     this.state.world = this.publicWorld();
+    this.dayNightBaseTimestamp = Date.now();
     console.log(`[GM] DM key: ${this.dmKey}`);
     console.log(`[GM] invite: ${this.session.inviteCode}`);
   }
@@ -1199,6 +1200,7 @@ export class GameManager {
     return {
       version: this.state.version,
       sessionId: this.session.id,
+      inviteCode: this.session.inviteCode,
       mapId: this.state.mapId,
       mapName: this.state.mapName,
       world: this.publicWorld(),

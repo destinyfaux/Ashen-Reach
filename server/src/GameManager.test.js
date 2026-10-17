@@ -722,6 +722,7 @@ test('GameManager movement validates half-tiles: both halves of a half-water til
     props: [],
     spawns: { party: [[4.5, 4.5]], monsters: [] },
   };
+  gm.state.doors = [];
   gm.rebuildWallCells();
 
   const joined = gm.join({ name: 'Explorer' });

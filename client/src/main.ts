@@ -96,6 +96,10 @@ function mountPanels() {
     onSheet: () => toggle(sheet),
     onInventory: () => toggle(inv),
     onMenu: () => toggle(menu),
+    onInvite: () => {
+      show(menu);
+      menu.showInvite();
+    },
   });
 
   const onKey = (e: KeyboardEvent) => {

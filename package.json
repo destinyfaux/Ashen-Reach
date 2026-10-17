@@ -10,6 +10,7 @@
     "lint": "tsc --noEmit",
     "start": "node server/src/index.js",
     "dev": "npm run build && npm run start",
+    "host": "npx --yes localtunnel --port 3000",
     "smoke": "node tools/smoke.mjs",
     "test": "node --test \"server/src/rules/*.test.js\" server/src/GameManager.test.js \"server/src/maps/*.test.mjs\""
   },

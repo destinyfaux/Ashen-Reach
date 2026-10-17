@@ -78,6 +78,11 @@ export function mountJoinScreen(container: HTMLElement, opts: JoinOpts = {}): ()
         ${opts.invite ? `<div class="landing-invite-fixed">Summons code <b>${escapeHtml(opts.invite)}</b></div>` : `
           <label for="ar-invite">SUMMONS CODE</label>
           <input id="ar-invite" class="join-invite-input" maxlength="12" autocomplete="off" spellcheck="false" placeholder="Optional — join a friend's gathering" />`}
+        <div class="landing-share-box" style="margin: 10px 0; padding: 10px; background: rgba(10,12,16,0.65); border: 1px solid #3d3526; text-align: left;">
+          <div style="font: 700 10px 'Cinzel',serif; color:var(--gold,#c9a227); letter-spacing:0.18em; text-transform:uppercase; margin-bottom:5px;">Invite Friends</div>
+          <button type="button" class="join-share-btn" data-copy-link style="background:#1a1914; border:1px solid #c9a227; color:#f0e6d2; padding:5px 12px; font:700 11px 'Cinzel',serif; cursor:pointer;">Copy Summons Link</button>
+          <span data-copy-note style="margin-left: 8px; font-size: 12px; color: #7ad19a; display:none;">Link copied!</span>
+        </div>
         <label class="join-dm landing-dm" data-dm><input type="checkbox" data-dm-box />
           <span class="join-dm-crown">${icon('crown', 'ic ic-crown-sm')}</span><span>Enter as Dungeon Master</span>
         </label>
@@ -153,6 +158,38 @@ export function mountJoinScreen(container: HTMLElement, opts: JoinOpts = {}): ()
     settingsPanel.hidden = !settingsPanel.hidden;
     settingsBtn.setAttribute('aria-expanded', String(!settingsPanel.hidden));
     if (!settingsPanel.hidden) inviteEl?.focus();
+  });
+  const copyLinkBtn = root.querySelector<HTMLButtonElement>('[data-copy-link]');
+  const copyNote = root.querySelector<HTMLElement>('[data-copy-note]');
+  copyLinkBtn?.addEventListener('click', async () => {
+    let code = opts.invite || (inviteEl ? inviteEl.value.trim() : '');
+    if (!code) {
+      try {
+        const res = await fetch('/api/invite');
+        if (res.ok) {
+          const d = await res.json();
+          if (d && d.code) code = d.code;
+        }
+      } catch { /* fallback */ }
+    }
+    let origin = window.location.origin;
+    if (origin.includes('ais-dev-')) {
+      origin = origin.replace('ais-dev-', 'ais-pre-');
+    }
+    const url = code ? `${origin}/j/${code}` : origin;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+        if (copyNote) {
+          copyNote.style.display = 'inline';
+          setTimeout(() => { if (copyNote) copyNote.style.display = 'none'; }, 3500);
+        }
+      } else {
+        throw new Error('no clipboard');
+      }
+    } catch {
+      showError(`Summons URL: ${url}`);
+    }
   });
   characterListEl.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button');

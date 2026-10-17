@@ -123,6 +123,7 @@ const GLYPH_RECORD = 'M30 16 H70 V84 H30 Z M40 32 H60 M40 46 H60 M40 60 H54';
 const GLYPH_SATCHEL = 'M34 42 H66 L73 82 H27 Z M40 42 C40 29 60 29 60 42 M50 29 V22';
 const GLYPH_MENU = 'M28 30 H72 M28 50 H72 M28 70 H72';
 const GLYPH_LEAVE = 'M62 16 H78 V84 H62 M36 34 L20 50 L36 66 M20 50 H58';
+const GLYPH_INVITE = 'M42 54 L36 60 C29 67 18 67 11 60 C4 53 4 42 11 35 L23 23 C30 16 41 16 48 23 L51 26 M58 46 L64 40 C71 33 82 33 89 40 C96 47 96 58 89 65 L77 77 C70 84 59 84 52 77 L49 74 M36 64 L64 36';
 
 // ── the escape menu ────────────────────────────────────────────────────────
 export interface EscapeOpts {
@@ -133,13 +134,49 @@ export interface EscapeOpts {
   onReturn(): void;
 }
 
-export function mountEscape(container: HTMLElement, opts: EscapeOpts): PanelHandle {
+export interface EscapeHandle extends PanelHandle {
+  showInvite(): void;
+}
+
+async function resolveInviteUrl(): Promise<string> {
+  let code = useGame.getState().inviteCode;
+  if (!code) {
+    try {
+      const res = await fetch('/api/invite');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.code) {
+          code = data.code;
+          useGame.setState({ inviteCode: code });
+        }
+      }
+    } catch { /* fallback to origin */ }
+  }
+  let origin = window.location.origin;
+  if (origin.includes('ais-dev-')) {
+    origin = origin.replace('ais-dev-', 'ais-pre-');
+  }
+  return code ? `${origin}/j/${code}` : origin;
+}
+
+export function mountEscape(container: HTMLElement, opts: EscapeOpts): EscapeHandle {
   const modal = createModal(container, { kicker: 'the ashen reach', title: 'Rest a moment', narrow: true });
   modal.body.innerHTML = `
     <div class="pnl-menu-actions">
       <button type="button" class="pnl-menu-btn" data-mb="resume">
         ${svg(GLYPH_RESUME, 'mb-ic')} <span>Resume</span>
       </button>
+      <button type="button" class="pnl-menu-btn" data-mb="invite">
+        ${svg(GLYPH_INVITE, 'mb-ic')} <span>Invite Allies (Summons Link)</span>
+      </button>
+      <div class="pnl-invite-wrap" data-invite-wrap style="display:none; background:#0b0d12; border:1px solid #3d3526; padding:10px 12px; margin:2px 0 6px;">
+        <div style="font: 700 10px 'Cinzel',serif; color:var(--gold); letter-spacing:0.18em; text-transform:uppercase; margin-bottom:5px;">Summons Link for Friends:</div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input class="pnl-invite-input" data-invite-val readonly style="flex:1; background:#050608; border:1px solid #4a4232; color:var(--bone); padding:6px 8px; font-size:12.5px; font-family:monospace;" />
+          <button type="button" class="pnl-invite-copy-btn" data-invite-copy style="background:#1c1a16; border:1px solid var(--gold); color:var(--gold-hi); padding:6px 10px; font:700 11px 'Cinzel',serif; cursor:pointer;">Copy</button>
+        </div>
+        <div data-invite-feedback style="font-size:12px; color:#6ab082; margin-top:5px; display:none;">Summons link copied to clipboard!</div>
+      </div>
       <button type="button" class="pnl-menu-btn" data-mb="sheet">
         ${svg(GLYPH_RECORD, 'mb-ic')} <span>Character Record</span> <kbd>C</kbd>
       </button>
@@ -153,11 +190,40 @@ export function mountEscape(container: HTMLElement, opts: EscapeOpts): PanelHand
     <div class="pnl-audio-settings" data-panel-keep-focus></div>
     <div class="pnl-menu-note">movement rests while this card is open — Esc or Resume to return</div>`;
 
+  const inviteWrap = modal.body.querySelector<HTMLElement>('[data-invite-wrap]')!;
+  const inviteVal = modal.body.querySelector<HTMLInputElement>('[data-invite-val]')!;
+  const copyBtn = modal.body.querySelector<HTMLButtonElement>('[data-invite-copy]')!;
+  const feedback = modal.body.querySelector<HTMLElement>('[data-invite-feedback]')!;
+
+  const handleCopyInvite = async () => {
+    inviteWrap.style.display = 'block';
+    const url = await resolveInviteUrl();
+    inviteVal.value = url;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+        feedback.textContent = 'Summons link copied to clipboard!';
+        feedback.style.display = 'block';
+        setTimeout(() => { feedback.style.display = 'none'; }, 4000);
+      } else {
+        throw new Error('clipboard unavailable');
+      }
+    } catch {
+      inviteVal.focus();
+      inviteVal.select();
+      feedback.textContent = 'Select and copy the link above.';
+      feedback.style.display = 'block';
+    }
+  };
+
+  copyBtn.addEventListener('click', handleCopyInvite);
+
   const disposeAudioSettings = mountAudioSettings(modal.body.querySelector<HTMLElement>('.pnl-audio-settings')!, true);
   modal.body.querySelectorAll<HTMLButtonElement>('.pnl-menu-btn').forEach((b) => {
     b.addEventListener('click', () => {
       switch (b.dataset.mb) {
         case 'resume': modal.close(); break;      // exclusivity: only this card is open
+        case 'invite': void handleCopyInvite(); break;
         case 'sheet': opts.onOpenSheet(); break;
         case 'inv': opts.onOpenInventory(); break;
         case 'leave': opts.onReturn(); break;
@@ -170,6 +236,10 @@ export function mountEscape(container: HTMLElement, opts: EscapeOpts): PanelHand
     close: () => modal.close(),
     toggle: () => modal.toggle(),
     isOpen: () => modal.isOpen(),
+    showInvite: () => {
+      modal.open();
+      void handleCopyInvite();
+    },
     dispose: () => { disposeAudioSettings(); modal.dispose(); },
   };
 }
@@ -177,12 +247,13 @@ export function mountEscape(container: HTMLElement, opts: EscapeOpts): PanelHand
 // ── the HUD dock (mouse affordance — FIX 11 [5]) ──────────────────────────
 // A fixed horizontal row above the self-status plaque; panels.css collapses it
 // to labeled-by-ARIA icon buttons on narrow screens.
-export function mountDock(container: HTMLElement, h: { onSheet(): void; onInventory(): void; onMenu(): void }): () => void {
+export function mountDock(container: HTMLElement, h: { onSheet(): void; onInventory(): void; onMenu(): void; onInvite?(): void }): () => void {
   const dock = document.createElement('div');
   dock.className = 'pnl-dock';
   dock.innerHTML = `
     <button type="button" class="pnl-dock-btn" data-dock="sheet" title="character record (C)" aria-label="Character record (C)">${svg(GLYPH_RECORD)} <span>Record</span> <kbd>C</kbd></button>
     <button type="button" class="pnl-dock-btn" data-dock="inv" title="satchel and gear (I)" aria-label="Satchel and gear (I)">${svg(GLYPH_SATCHEL)} <span>Satchel</span> <kbd>I</kbd></button>
+    <button type="button" class="pnl-dock-btn" data-dock="invite" title="invite allies to session" aria-label="Invite allies">${svg(GLYPH_INVITE)} <span>Invite</span></button>
     <button type="button" class="pnl-dock-btn" data-dock="menu" title="menu (Esc)" aria-label="Menu (Escape)">${svg(GLYPH_MENU)} <span>Menu</span> <kbd>Esc</kbd></button>`;
   container.appendChild(dock);
   dock.addEventListener('click', (e) => {
@@ -190,6 +261,7 @@ export function mountDock(container: HTMLElement, h: { onSheet(): void; onInvent
     if (!b) return;
     if (b.dataset.dock === 'sheet') h.onSheet();
     else if (b.dataset.dock === 'inv') h.onInventory();
+    else if (b.dataset.dock === 'invite') (h.onInvite ? h.onInvite() : h.onMenu());
     else if (b.dataset.dock === 'menu') h.onMenu();
   });
   return () => dock.remove();

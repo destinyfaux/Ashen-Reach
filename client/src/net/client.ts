@@ -198,6 +198,7 @@ function dispatch(ev: string, data: any) {
     case 'state:sync': {
       const st = data.state || {};
       lastVersion = typeof data.version === 'number' ? data.version : st.version ?? -1;
+      if (st.inviteCode) useGame.setState({ inviteCode: st.inviteCode });
       if (st.world) useGame.setState({ world: st.world });
       if (data.map) { lastMap = data.map; currentMapId = data.map.id || ''; }
       lastTokens = st.tokens || [];
