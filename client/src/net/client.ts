@@ -168,6 +168,9 @@ function onClose() {
   // exponential backoff: 0.5s → 1s → 2s → 4s → 8s (cap) ± 20% jitter
   const delay = Math.min(8000, 500 * 2 ** attempt) * (0.8 + Math.random() * 0.4);
   attempt++;
+  if (attempt >= 3) {
+    Bus.emit(EV.ERROR, { message: 'WebSocket connection failed (502 / proxy error). If tunneling, ensure your tunnel supports WebSockets.' });
+  }
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = setTimeout(() => { retryTimer = null; connect(); }, delay);
 }
