@@ -129,6 +129,18 @@ function advanceTo(from, target, budget, aimDist) {
   return { x: clampWorld(Number(from.x) + Math.cos(ang) * step), z: clampWorld(Number(from.z) + Math.sin(ang) * step) };
 }
 
+/** P3.4: route a move through the state's nav facade (walls / doors / props /
+ *  bounds — one blocked-predicate on the server). Returns the farthest
+ *  in-budget waypoint, or null when no route exists (never cut corners).
+ *  Without a nav facade (legacy callers / tests) the straight-line step stands. */
+function navMove(state, from, toward, budget, fallback) {
+  const step = state?.nav?.step;
+  if (typeof step !== 'function') return fallback;
+  const p = step(Number(from.x), Number(from.z), Number(toward.x), Number(toward.z), budget);
+  if (!p) return null;
+  return { x: clampWorld(p.x), z: clampWorld(p.z) };
+}
+
 /** Step directly away from `target` until `idealDist`, within budget (kiting). */
 function retreatFrom(from, target, budget, idealDist) {
   const d = distFt(from, target);
@@ -345,7 +357,8 @@ export function chooseAction(state, monsterToken, srdMonster, rng = Math.random)
     if (d <= maxRange + 0.01) {
       if (d < KITE_TRIGGER_FT && budget > 0) {
         const idealDist = Math.min(KITE_TRIGGER_FT + 10, Math.max(KITE_TRIGGER_FT, maxRange * 0.8));
-        const move = retreatFrom(token, target, budget, idealDist);
+        const direct = retreatFrom(token, target, budget, idealDist);
+        const move = direct ? navMove(state, token, direct, budget, direct) : null;
         if (move) {
           return {
             kind: 'attack', targetId: target.id, weaponName: bow.name, attacks: [bow.name],
@@ -359,14 +372,16 @@ export function chooseAction(state, monsterToken, srdMonster, rng = Math.random)
       };
     }
     // out of range entirely: close the gap this turn (dash covers the move)
-    const move = advanceTo(token, target, budget, maxRange * 0.8);
+    const direct = advanceTo(token, target, budget, maxRange * 0.8);
+    const move = direct ? navMove(state, token, direct, budget, direct) : null;
     if (move) return { kind: 'dash', move, slot: 'action', reason: 'ranged-approach' };
     return { kind: 'dodge', slot: 'action', reason: 'ranged-out-of-range' };
   }
 
   // (a) melee approach: spend the budget closing, strike if we arrive
   if (melee.length) {
-    const move = advanceTo(token, target, budget, Math.max(2, maxReach - 2.5));
+    const direct = advanceTo(token, target, budget, Math.max(2, maxReach - 2.5));
+    const move = direct ? navMove(state, token, direct, budget, direct) : null;
     if (move) {
       const arrived = distFt(move, target) <= maxReach + 0.01;
       if (arrived) {

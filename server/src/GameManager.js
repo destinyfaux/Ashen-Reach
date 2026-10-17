@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachCombat } from './CombatDriver.js';
 import { buildCharacter } from './rules/CharacterEngine.js';
+import { lightLevelAt, effectiveVisionFt, torchPointsFromTokens } from './rules/Light.js';
 import { generateDungeon } from './maps/generator.mjs';
 import { generateOverworld } from './maps/worldGenerator.mjs';
 import {
@@ -208,24 +209,8 @@ export class GameManager {
     const origin = regionOriginFt(rx, rz);
     const colliders = [];
     for (const prop of def.props || []) {
-      if (prop.type === 'building') {
-        const rotated = Math.abs(Math.sin(prop.rotY || 0)) > 0.5;
-        const width = prop.width || 5, depth = prop.depth || 5;
-        const halfX = (rotated ? depth : width) * CELL_FT * 0.82 * 0.44;
-        const halfZ = (rotated ? width : depth) * CELL_FT * 0.82 * 0.44;
-        const centerX = prop.x * CELL_FT + origin.x, centerZ = prop.z * CELL_FT + origin.z;
-        colliders.push({ minX: centerX - halfX, minZ: centerZ - halfZ, maxX: centerX + halfX, maxZ: centerZ + halfZ, tol: 0.85 });
-      } else if (prop.type === 'tree') {
-        const scale = (prop.scale || 1) * (prop.variant === 'dead' ? 1.2 : 1);
-        if (scale <= 1.12) continue;
-        const radius = Math.max(0.65, scale * 0.35);
-        const centerX = prop.x * CELL_FT + origin.x, centerZ = prop.z * CELL_FT + origin.z;
-        colliders.push({ minX: centerX - radius, minZ: centerZ - radius, maxX: centerX + radius, maxZ: centerZ + radius, tol: 0.75 });
-      } else if (prop.type === 'boulder') {
-        const radius = Math.max(1.1, (prop.scale || 1) * 0.75);
-        const centerX = prop.x * CELL_FT + origin.x, centerZ = prop.z * CELL_FT + origin.z;
-        colliders.push({ minX: centerX - radius, minZ: centerZ - radius, maxX: centerX + radius, maxZ: centerZ + radius, tol: 0.85 });
-      }
+      const fp = this.propFootprint(prop, origin.x, origin.z);
+      if (fp) colliders.push(fp);
     }
     this.regionProps.set(key, colliders);
   }
@@ -478,6 +463,61 @@ export class GameManager {
     return false;
   }
 
+  /** Quick win (kit collision): single source of truth for prop collision
+   *  footprints in world feet, mirroring the client's tilegrid/props.ts +
+   *  structures.ts boxes. Used by registerRegionData (streamed overworld) and
+   *  overlapsLandscapeProp (dungeon maps) so server validation agrees with
+   *  client prediction. Deliberately collidable but RNG-shaped (ruin_wall's
+   *  walkable breach) and decorative-walkable props (grave_fence, grave_mound,
+   *  grave_marker, rubble, snow_drift, twig) stay collider-free on BOTH sides.
+   *  Returns {minX,minZ,maxX,maxZ,tol} or null. */
+  propFootprint(prop, ox, oz) {
+    const cx = prop.x * CELL_FT + ox, cz = prop.z * CELL_FT + oz;
+    const rotated = Math.abs(Math.sin(prop.rotY || 0)) > 0.5;
+    const box = (halfX, halfZ, tol = 0.85) =>
+      ({ minX: cx - halfX, minZ: cz - halfZ, maxX: cx + halfX, maxZ: cz + halfZ, tol });
+    switch (prop.type) {
+      case 'building': {
+        const width = prop.width || 5, depth = prop.depth || 5;
+        return box((rotated ? depth : width) * CELL_FT * 0.82 * 0.44, (rotated ? width : depth) * CELL_FT * 0.82 * 0.44);
+      }
+      case 'tree': {
+        const scale = (prop.scale || 1) * (prop.variant === 'dead' ? 1.2 : 1);
+        if (scale <= 1.12) return null;
+        const radius = Math.max(0.65, scale * 0.35);
+        return box(radius, radius, 0.75);
+      }
+      case 'boulder': {
+        const radius = Math.max(1.1, (prop.scale || 1) * 0.75);
+        return box(radius, radius);
+      }
+      // ── dungeon kit props (boxes mirror props.ts colliders exactly) ──
+      case 'pillar': return box(2.4, 2.4, 0.7);
+      case 'brazier': return box(1.4, 1.4, 0.7);
+      case 'coffin': return box(rotated ? 4.3 : 2.1, rotated ? 2.1 : 4.3, 0.8);
+      case 'altar': return box(rotated ? 3 : 5, rotated ? 5 : 3, 0.8);
+      // ── world structure kits (boxes mirror structures.ts colliders) ──
+      case 'well': return box(2.5, 2.5, 0.8);
+      case 'ruin_column': {
+        const s = prop.scale || 1;
+        return box(1.1 * s, 1.1 * s, 0.75);
+      }
+      case 'ruin_column_fallen': {
+        const s = prop.scale || 1;
+        return box(rotated ? 1.3 * s : 2.0 * s, rotated ? 2.0 * s : 1.3 * s, 0.8);
+      }
+      case 'ruin_slab': return box(rotated ? 2.2 : 3, rotated ? 3 : 2.2, 0.8);
+      case 'grave_gate': return box(rotated ? 1.0 : 4.6, rotated ? 4.6 : 1.0, 0.7);
+      case 'mausoleum': return box(rotated ? 3.6 : 4.9, rotated ? 4.9 : 3.6);
+      case 'columbarium': return box(rotated ? 1.0 : 4.9, rotated ? 4.9 : 1.0, 0.75);
+      case 'ruin_pillar': {
+        const s = prop.scale || 1;
+        return box(1.1 * s, 1.1 * s, 0.75);
+      }
+      default: return null;
+    }
+  }
+
   overlapsLandscapeProp(x, z) {
     if (this.worldFocus && this.map?.region) {
       const gx = Math.floor(x / CELL_FT), gz = Math.floor(z / CELL_FT);
@@ -497,24 +537,8 @@ export class GameManager {
       return Math.hypot(dx, dz) < tolerance;
     };
     for (const prop of this.map?.props || []) {
-      if (prop.type === 'building') {
-        const rotated = Math.abs(Math.sin(prop.rotY || 0)) > 0.5;
-        const width = prop.width || 5, depth = prop.depth || 5;
-        const halfX = (rotated ? depth : width) * CELL_FT * 0.82 * 0.44;
-        const halfZ = (rotated ? width : depth) * CELL_FT * 0.82 * 0.44;
-        const centerX = prop.x * CELL_FT, centerZ = prop.z * CELL_FT;
-        if (overlapsCollider(centerX - halfX, centerZ - halfZ, centerX + halfX, centerZ + halfZ)) return true;
-      } else if (prop.type === 'tree') {
-        const scale = (prop.scale || 1) * (prop.variant === 'dead' ? 1.2 : 1);
-        if (scale <= 1.12) continue;
-        const radius = Math.max(0.65, scale * 0.35);
-        const centerX = prop.x * CELL_FT, centerZ = prop.z * CELL_FT;
-        if (overlapsCollider(centerX - radius, centerZ - radius, centerX + radius, centerZ + radius, 0.75)) return true;
-      } else if (prop.type === 'boulder') {
-        const radius = Math.max(1.1, (prop.scale || 1) * 0.75);
-        const centerX = prop.x * CELL_FT, centerZ = prop.z * CELL_FT;
-        if (overlapsCollider(centerX - radius, centerZ - radius, centerX + radius, centerZ + radius)) return true;
-      }
+      const fp = this.propFootprint(prop, 0, 0);
+      if (fp && overlapsCollider(fp.minX, fp.minZ, fp.maxX, fp.maxZ, fp.tol)) return true;
     }
     return false;
   }
@@ -551,10 +575,21 @@ export class GameManager {
       }
       return false;
     };
+    // P3.13: token reveal is light-aware — a monster is sent to the client
+    // when it is within its own effective sight of the player (the same
+    // flip-flop the AI uses). In dark rooms low-darkvision creatures stay
+    // hidden until you're close; rendering darkness hides unlit figures.
+    const timeMin = this.getDayNight().time;
+    const torches = torchPointsFromTokens(this.state.tokens);
+    const litAt = (x, z) => lightLevelAt({
+      isDungeon: !this.state.world, x, z, timeMin,
+      mapLights: this.map?.lights, torchPoints: torches,
+    });
     return this.state.tokens.filter((token) => {
       if (token.kind === 'player') return true;
       if (token.hidden) return false;
-      return Math.hypot(token.x - player.x, token.z - player.z) <= 45 && !blocked(player, token);
+      return Math.hypot(token.x - player.x, token.z - player.z) <= effectiveVisionFt(token.senses, litAt(player.x, player.z))
+        && !blocked(player, token);
     });
   }
   initiativeForUser(userId) {
@@ -713,6 +748,10 @@ export class GameManager {
       tokens: this.state.tokens,
       doors: this.state.doors,
       chat: this.state.chat,
+      // streamed-world focus rides along (null inside dungeons) so clients
+      // keep a truthful `world` across map transitions instead of a stale
+      // pre-dungeon focus
+      world: this.state.world,
     });
     return { ok: true, mapId: destinationId };
   }

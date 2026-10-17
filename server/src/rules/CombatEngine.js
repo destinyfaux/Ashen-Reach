@@ -4,7 +4,8 @@
 //
 // Ported from Custom-VTT's proven combat flow (server.js + VTTManager.js):
 //   • initiative: d20 + DEX mod, tiebreak DEX then id (VTTManager.setInitiativeOrder)
-//   • movement budget: trail + LIFO rewind refund, Chebyshev cell cost (S3 system)
+//   • movement budget: true arc-length costing (every foot walked costs a foot,
+//     RAW), no-op intents free, no rewind refunds (they made the readout oscillate)
 //   • death saves: nat 20 -> 1 HP, nat 1 -> 2 fails, 3 fails dead, 3 oks stable
 //   • damage at 0 HP -> 1 fail (2 on crit), massive damage (>= hpMax) -> instant death
 //   • healing from 0 resets death save progress
@@ -40,7 +41,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRD = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'srd_data.json'), 'utf-8'));
 
 export const CELL_FT = 5;          // one grid cell = 5 feet
-const TRAIL_MATCH_FT = 2.5;        // rewind match tolerance (same-cell in continuous coords)
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
@@ -87,11 +87,15 @@ export function effectiveSpeedFt(state, token) {
   return speed;
 }
 
-// Chebyshev cell distance * 5ft, minimum one 5ft step (VTT stepCostFt).
+// True arc distance in feet. The old VTT grid cost (min one 5ft step per
+// intent, Chebyshev + round) was built for discrete cell-to-cell drags; applied
+// to real-time 10Hz move intents it charged 5ft for every 1.6ft walked — a 30ft
+// budget bought ~9ft of actual movement — and tap-timed 7.4ft intents rode the
+// rounding for up to 48% free distance. Continuous intents get continuous cost.
 function stepCostFt(fromX, fromZ, toX, toZ) {
-  const cells = Math.max(Math.abs(Number(toX) - Number(fromX)), Math.abs(Number(toZ) - Number(fromZ))) / CELL_FT;
-  if (cells < 0.01) return 0;
-  return Math.max(1, Math.round(cells)) * CELL_FT;
+  const dx = Number(toX) - Number(fromX), dz = Number(toZ) - Number(fromZ);
+  const d = Math.hypot(dx, dz);
+  return d < 0.5 ? 0 : d;   // sub-half-foot jitter (idle announces, corrections) is a no-op
 }
 
 // Start-of-turn anchor: fresh budget for the combatant where they stand.
@@ -110,7 +114,8 @@ export function anchorMovement(state, tokenId) {
 }
 
 /**
- * The one gate every in-combat token move flows through (VTT attemptMove port).
+ * The one gate every in-combat token move flows through (VTT attemptMove port,
+ * continuous-feet edition: arc-length costing, no-op intents free).
  * @returns {{ok: true, usedFt, cost, x, z} | {ok: false, reason, x, z, usedFt, speed, needed}}
  *   reasons: not_found | not_your_turn | no_movement
  * Out of combat movement is free — GameManager handles position updates directly;
@@ -144,19 +149,15 @@ export function attemptMove(state, token, x, z, { isDM = false } = {}) {
     return { ok: true, free: true, usedFt: 0, cost: 0, x: token.x, z: token.z };
   }
 
-  // Rewind: dropping on (or next to) any earlier trail point refunds the spend since.
-  for (let i = budget.trail.length - 2; i >= 0; i--) {
-    const step = budget.trail[i];
-    if (Math.abs(step.x - nx) < TRAIL_MATCH_FT && Math.abs(step.z - nz) < TRAIL_MATCH_FT) {
-      token.x = nx; token.z = nz;
-      budget.trail = budget.trail.slice(0, i + 1);
-      budget.usedFt = step.cumFt;
-      return { ok: true, rewound: true, usedFt: budget.usedFt, cost: 0, x: token.x, z: token.z };
-    }
-  }
-
+  // No-op intents (dest == head: idle announces, correction echoes, rotY-only
+  // sends) never touch the budget — charging or refunding them is what made
+  // the remaining-movement readout oscillate ±5ft while standing still.
   const head = budget.trail[budget.trail.length - 1];
   const cost = stepCostFt(head.x, head.z, nx, nz);
+  if (cost <= 0) {
+    return { ok: true, free: true, usedFt: budget.usedFt, cost: 0, x: token.x, z: token.z };
+  }
+
   const speed = budget.maxFt ?? effectiveSpeedFt(state, token);
   if (budget.usedFt + cost > speed) {
     return { ok: false, reason: 'no_movement', x: token.x, z: token.z, usedFt: budget.usedFt, speed, needed: cost };

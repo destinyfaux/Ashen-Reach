@@ -40,7 +40,9 @@ const MIME = {
   '.otf': 'font/otf',
   '.map': 'application/json',
   '.txt': 'text/plain; charset=utf-8',
-  '.wasm': 'application/wasm'
+  '.wasm': 'application/wasm',
+  '.glb': 'model/gltf-binary',   // cooked asset kits (Wave 1 pipeline)
+  '.ktx2': 'image/ktx2'          // BasisU texture payload inside the kits
 };
 
 function serveFile(res, file) {
@@ -186,6 +188,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 attachWs(server, gm);
+// P3.10: start the ambient monster simulation at real-server bootstrap only —
+// tests never import index.js, so the world never simulates under assertions.
+gm.startAmbientTick?.();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[ASHENREACH] server listening on http://localhost:${PORT}`);

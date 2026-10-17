@@ -21,6 +21,7 @@ import {
   initResources, recoverResources, resourceMax, formulaContext,
   passivesFor, fightingStyleOf
 } from './Mechanics.js';
+import { isLightSourceName } from './Light.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRD = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'srd_data.json'), 'utf-8'));
@@ -681,6 +682,12 @@ export function buildCharacter(def = {}) {
         : kind === 'shield' ? hasShield : false;
     return { name: e.name, qty: e.qty || 1, kind, weight: parseWeight(e.weight ?? found.weight), equipped };
   });
+  // P3.13: every adventurer carries a light source — two torches unless the
+  // kit already includes one. Equipping one feeds the light/vision system
+  // (sheet.lightSource; see rules/Light.js for radii and the perception math).
+  if (!inventory.some(i => isLightSourceName(i.name))) {
+    inventory.push({ name: 'Torch', qty: 2, kind: 'gear', weight: 1, equipped: false });
+  }
   const totalWeight = inventory.reduce((s, i) => s + i.weight * (i.qty || 1), 0);
   const capacity = abilities.str * 15;
 
@@ -791,6 +798,11 @@ export function toggleEquipment(sheet, itemName) {
   } else if (kind === 'shield') {
     equipped = !sheet.shield;
     sheet.shield = equipped;
+  } else if (isLightSourceName(item.name)) {
+    // P3.13: torches/lanterns/lamps equip as held light sources. Equipping one
+    // dims the previous flame (one lit source at a time — one free hand).
+    equipped = key(sheet.lightSource || '') !== key(item.name);
+    sheet.lightSource = equipped ? item.name : null;
   } else {
     return { ok: false, reason: 'not_equippable' };
   }
@@ -835,7 +847,8 @@ export function toggleEquipment(sheet, itemName) {
     entry.equipped = entryKind === 'weapon'
       ? (sheet.equipped || []).some(name => key(name) === key(entry.name))
       : entryKind === 'armor' ? key(sheet.armor) === key(entry.name)
-        : entryKind === 'shield' ? !!sheet.shield : false;
+        : entryKind === 'shield' ? !!sheet.shield
+          : isLightSourceName(entry.name) ? key(sheet.lightSource || '') === key(entry.name) : false;
   }
   return { ok: true, item: item.name, kind, equipped, ac: sheet.ac };
 }

@@ -90,6 +90,77 @@ test('Dash outside combat is rejected instead of succeeding without a movement e
   assert.equal(dash.reason, 'no_movement');
 });
 
+// ── continuous movement costing (arc-length feet, not grid quanta) ───────────
+
+function moveState(id, maxFt = 30) {
+  const t = mkToken({ id });
+  const state = {
+    tokens: [t],
+    initiative: {
+      order: [id], turnIdx: 0,
+      movement: { tokenId: id, usedFt: 0, maxFt, trail: [{ x: 0, z: 0, cumFt: 0 }] },
+    },
+  };
+  return { state, t, m: state.initiative.movement };
+}
+
+test('attemptMove charges true arc distance — 10ft of walking costs 10ft, not 50ft', () => {
+  const { state, t, m } = moveState('walker');
+  // The old grid cost burned a minimum 5ft per 10Hz intent: ten 1ft steps ate
+  // the whole 30ft budget after ~6ft of actual movement.
+  for (let i = 1; i <= 10; i++) {
+    const r = attemptMove(state, t, i, 0);
+    assert.equal(r.ok, true, `step ${i}`);
+  }
+  assert.equal(t.x, 10);
+  assert.equal(Math.round(m.usedFt), 10);
+  // budget still has 20ft: 19ft more works, the next full step bounces
+  assert.equal(attemptMove(state, t, 29, 0).ok, true);
+  assert.equal(attemptMove(state, t, 31, 0).ok, false);
+  // a partial step that exactly fits is accepted
+  assert.equal(attemptMove(state, t, 30, 0).ok, true);
+  assert.equal(Math.round(state.initiative.movement.usedFt), 30);
+  assert.equal(attemptMove(state, t, 30.6, 0).ok, false);
+});
+
+test('attemptMove: no-op intents (same spot / sub-half-foot jitter) never touch the budget', () => {
+  const { state, t, m } = moveState('idle');
+  const same = attemptMove(state, t, 0, 0);
+  assert.equal(same.ok, true);
+  assert.equal(same.usedFt, 0);
+  const jitter = attemptMove(state, t, 0.3, 0.2);
+  assert.equal(jitter.ok, true);
+  assert.equal(jitter.usedFt, 0);
+  // no trail growth from idle announces (10Hz no-ops would balloon the array)
+  assert.equal(m.trail.length, 1);
+  assert.equal(t.x, 0);
+});
+
+test('attemptMove: retracing steps still pays (no rewind refunds, no ±5ft oscillation)', () => {
+  const { state, t, m } = moveState('retrace');
+  assert.equal(attemptMove(state, t, 10, 0).ok, true);
+  const spent = m.usedFt;
+  assert.equal(spent, 10);
+  // walk back over an earlier trail point: RAW — every foot costs a foot
+  assert.equal(attemptMove(state, t, 4, 0).ok, true);
+  assert.equal(m.usedFt, spent + 6);
+  // landing within the old rewind tolerance of an earlier point must NOT
+  // refund the spend since (the old LIFO match made usedFt snap back and the
+  // HUD readout bounce up 5ft, then down, while hovering near the path)
+  assert.equal(attemptMove(state, t, 9.8, 0).ok, true);
+  assert.equal(Math.round(m.usedFt), 22);   // 10 + 6 + 5.8 = 21.8 — no refund
+});
+
+test('attemptMove: diagonal movement costs its true length (no Chebyshev rounding)', () => {
+  const { state, t, m } = moveState('diag');
+  assert.equal(attemptMove(state, t, 3, 4).ok, true);
+  assert.equal(Math.round(m.usedFt * 100) / 100, 5);   // 3-4-5 triangle
+  // old grid cost would have charged exactly 5ft for any ≥2.5ft step and a 5ft
+  // minimum for 1ft ones — now cost scales linearly with true distance
+  assert.equal(attemptMove(state, t, 4.5, 4.5).ok, true);
+  assert.ok(m.usedFt > 6.5 && m.usedFt < 6.7, `diag cost ${m.usedFt}`);   // +√2.5 ≈ +1.58
+});
+
 // ── attack vs AC ──────────────────────────────────────────────────────────────
 
 function attackState() {

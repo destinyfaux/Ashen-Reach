@@ -37,6 +37,8 @@
 // All randomness is hash-seeded — generating region (rx, rz) never depends
 // on which other regions were generated first.
 
+import { layoutTown, flattenTownFootprint, siteSupportsTown } from './townLayout.mjs';
+
 const CELL_FT = 5;
 export const REGION_W = 112;
 export const REGION_H = 96;
@@ -213,6 +215,13 @@ function classifyBiome(gx, gz, seed) {
   if (wB > 0.52) return 'deadlands';
   if (wM > 0.34 && wB < 0.4) return 'forest';
   if (wS > 0.55) return moist > 0.5 ? 'snow_forest' : 'snowfield';
+  // Snow skirt (user ruling: snow biomes are NEVER allowed next to meadow —
+  // the transition read as a jarring white wall). The band below snow weight
+  // 0.55 classifies as cold conifer forest, so every approach to snow
+  // country crosses a forest belt (measured ≈20 cells wide at the field's
+  // mean gradient) instead of slamming meadow into snowfield. Inside the
+  // home halo wS ≈ 0, so home meadows are untouched.
+  if (wS > 0.45) return 'forest';
   if (moist > 0.5 + halo * 0.12) return 'forest';
   return 'meadow';
 }
@@ -796,8 +805,11 @@ const LAKE_SALT = 7001;
 const NEIGHBOR_CLUSTER_VARIANTS = {
   forest: ['tree', 'tree', 'boulder', 'fern', 'twig', 'rock'],
   meadow: ['wildflower', 'grass', 'grass', 'wildflower', 'grass', 'rock', 'wildflower', 'grass', 'tree'],
-  snow_forest: ['tree', 'tree', 'boulder', 'snow_drift', 'rock'],
-  snowfield: ['snow_drift', 'snow_drift', 'rock', 'boulder'],
+  snow_forest: ['tree', 'tree', 'tree', 'boulder', 'snow_drift', 'rock'],
+  // snowfield gains a sparse tree mix (user ruling: snow country gets a good
+  // mix of trees — the snowpine stock we already use — plus dead trees to
+  // sell the frozen look; both draw from existing kit species buckets).
+  snowfield: ['tree', 'snow_drift', 'snow_drift', 'rock', 'boulder', 'tree'],
   deadlands: ['tree', 'tree', 'dead_brush', 'rock', 'boulder'],
   mountains: ['boulder', 'boulder', 'rock', 'tree', 'scree'],
   ruins: ['rubble', 'rubble', 'rock', 'ruin_pillar'],
@@ -1032,12 +1044,26 @@ function generateNeighborRegion(rx, rz, ctx) {
   }
 
   // ── 7. roads from world segments + bridges per crossing cluster ──────────
+  // Wide carriageways (user ruling ~4x): each path cell stamps a radius-2
+  // disc (≈4-5 cells / 20-25 ft). The CENTER cell always stamps (so rare
+  // path-on-river cells still form crossing clusters → bridges), while disc
+  // OFFSETS stamp on land only — wide roads narrow to the bank instead of
+  // spawning phantom bridges over lake rims.
   const roadCells = new Set();
   for (const segment of ctx.roads.segments) {
     for (const p of segment.cells) {
       const lx = Math.round(p.x - originX), lz = Math.round(p.z - originZ);
       if (lx < 0 || lz < 0 || lx >= REGION_W || lz >= REGION_H) continue;
       roadCells.add(lz * REGION_W + lx);
+      for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        if (dx * dx + dz * dz > 4.35) continue;
+        const nx = lx + dx, nz = lz + dz;
+        if (nx < 0 || nz < 0 || nx >= REGION_W || nz >= REGION_H) continue;
+        const ncell = nz * REGION_W + nx;
+        if (waterCells.has(ncell)) continue;
+        roadCells.add(ncell);
+      }
     }
   }
   const bridges = [];
@@ -1092,6 +1118,14 @@ function generateNeighborRegion(rx, rz, ctx) {
     bridges.push({ x: avgX + 0.5, z: avgZ + 0.5, type: 'bridge', width: bridgeWidth, length: bridgeLength, rotY, scale: 1.0 });
   }
 
+  // Wide-road sweep: disc offsets already stamp on land only, but the road
+  // CENTER cells still stamp raw (bridge detection needs them). After the
+  // bridge corridors de-water their cells, strip any road cell still sitting
+  // on water — roads narrow to the bank, bridges keep their crossings.
+  for (const cell of [...roadCells]) {
+    if (waterCells.has(cell)) roadCells.delete(cell);
+  }
+
   // ── 8. site overrides paint the site footprints onto the biome field ────
   const overrideEllipse = (cx, cz, rx, rz, biomeName) => {
     for (let z = Math.max(0, Math.floor(cz - rz)); z <= Math.min(REGION_H - 1, Math.ceil(cz + rz)); z++) {
@@ -1124,18 +1158,19 @@ function generateNeighborRegion(rx, rz, ctx) {
     }
     return null;
   };
-  const findSite = (rng, half) => {
+  const findSite = (rng, half, avoid = null) => {
+    const avoidHit = (x, z) => avoid && Math.abs(x - avoid.x) < avoid.r && Math.abs(z - avoid.z) < avoid.r;
     // prefer spots near a road so ruins/graveyards read as destinations
     for (let attempt = 0; attempt < 26; attempt++) {
       const x = half + 4 + rng() * (REGION_W - half * 2 - 8);
       const z = half + 4 + rng() * (REGION_H - half * 2 - 8);
-      if (!isLand(x, z)) continue;
+      if (!isLand(x, z) || avoidHit(x, z)) continue;
       if (nearRoad(x, z, 14)) return { x, z };
     }
     for (let attempt = 0; attempt < 26; attempt++) {
       const x = half + 4 + rng() * (REGION_W - half * 2 - 8);
       const z = half + 4 + rng() * (REGION_H - half * 2 - 8);
-      if (isLand(x, z)) return { x, z };
+      if (isLand(x, z) && !avoidHit(x, z)) return { x, z };
     }
     return null;
   };
@@ -1220,13 +1255,68 @@ function generateNeighborRegion(rx, rz, ctx) {
     }
   }
 
+  // ── 9b. town sites (P3.8): rare road-adjacent hamlets on buildable land ──
+  // A dedicated rng stream keeps the region's other draw sequences untouched;
+  // the roll is hash-pure so town placement is order-independent.
+  let townBuilt = false;
+  let townSite = null;
+  let townRecord = null;
+  const townRng = mulberry32((hash2(rx * 13 + 5, rz * 11 + 3, seed ^ 0x70bd) * 0x7fffffff) | 0);
+  const townRoll = hash2(rx * 7 + 1, rz * 17 + 4, seed ^ 0x70be);
+  const TOWN_ODDS = 0.12;
+  const townSurvey = {
+    blocked: (x, z, kind) => {
+      const cx2 = Math.floor(x), cz2 = Math.floor(z);
+      if (cx2 < 2 || cz2 < 2 || cx2 >= REGION_W - 2 || cz2 >= REGION_H - 2) return true;
+      const cell = cz2 * REGION_W + cx2;
+      if (waterCells.has(cell)) return true;
+      if (kind === 'water') return false;
+      return roadCells.has(cell);
+    },
+    inBounds: (x, z) => x > 20 && z > 20 && x < REGION_W - 20 && z < REGION_H - 20,
+    heightAt: (x, z) => heights[Math.max(0, Math.min(REGION_H, Math.round(z))) * (REGION_W + 1) + Math.max(0, Math.min(REGION_W, Math.round(x)))],
+  };
+  if (!graveyardHere && townRoll < TOWN_ODDS && dominant !== 'mountains' && dominant !== 'deadlands' && dominant !== 'snowfield') {
+    // site survey: whole footprint clear of water (+margin), near a road,
+    // level ground, well inside the region so pads never cross a seam
+    // road-adjacent sites preferred (yaw anchor + travel access); plots may
+    // also anchor the layout when no road is near, so fall back after 20 tries
+    for (let attempt = 0; attempt < 40 && !townSite; attempt++) {
+      const x = 42 + townRng() * (REGION_W - 84);
+      const z = 38 + townRng() * (REGION_H - 76);
+      const support = siteSupportsTown({ cx: x, cz: z, rx: 14, rz: 11, margin: 2, survey: townSurvey, heightAt: townSurvey.heightAt, maxGradeFt: 14 });
+      if (!support.ok) continue;
+      if (attempt < 20 && !nearRoad(x, z, 12)) continue;
+      townSite = { x, z };
+    }
+    if (townSite) {
+      const roadCell = nearRoad(townSite.x, townSite.z, 16);
+      const roadDir = roadCell ? { x: roadCell.x - townSite.x, z: roadCell.z - townSite.z } : null;
+      const town = layoutTown({ rng: townRng, cx: townSite.x, cz: townSite.z, roadDir, survey: townSurvey, maxRadius: 20 });
+      if (town) {
+        flattenTownFootprint(heights, REGION_W + 1, town, { vertexH: REGION_H + 1 });
+        for (const b of town.buildings) addProp('building', b.x, b.z, b);
+        addProp('well', town.well.x, town.well.z, { clusterId: 'town-site' });
+        for (const l of town.lanterns) addProp('street_lantern', l.x, l.z, { clusterId: 'town-site' });
+        overrideEllipse(townSite.x, townSite.z, 17, 14, 'town');
+        clusters.push({ id: 'town-site', rule: 'town_center', biome: 'town', x: townSite.x, z: townSite.z, radius: 15 });
+        pointsOfInterest.push({
+          id: `town-${rx}_${rz}`, kind: 'town',
+          label: `${nameForRegion(rx, rz, seed)} Crossing`, x: townSite.x, z: townSite.z,
+        });
+        townBuilt = true;
+        townRecord = { variant: town.variant, axis: { ...town.axis }, cx: town.cx, cz: town.cz };
+      }
+    }
+  }
+
   const siteRoll = hash2(rx * 17 + 3, rz * 5 + 8, seed ^ 0x33dd);
   if (!graveyardHere && lushShare > 0.5) {
     const templeOdds = dominant === 'meadow' ? 0.16 : 0.0;
     const fortressOdds = dominant === 'meadow' ? 0.11 : 0.10;
     if (siteRoll < templeOdds || siteRoll < templeOdds + fortressOdds) {
       const isTemple = siteRoll < templeOdds;
-      const site = findSite(regionRng, isTemple ? 10 : 12);
+      const site = findSite(regionRng, isTemple ? 10 : 12, townBuilt ? { x: townSite.x, z: townSite.z, r: 26 } : null);
       if (site) {
         const roadCell = nearRoad(site.x, site.z, 14);
         const phi = facingToward(site, roadCell);
@@ -1333,11 +1423,26 @@ function generateNeighborRegion(rx, rz, ctx) {
       if (px < 1.5 || pz < 1.5 || px > REGION_W - 1.5 || pz > REGION_H - 1.5) continue;
       const cell = Math.floor(pz) * REGION_W + Math.floor(px);
       if (waterCells.has(cell) || roadCells.has(cell)) continue;
-      const treeVariant = biomeName === 'deadlands' ? 'dead'
-        : biomeName === 'snow_forest' ? 'snowpine'
-          : biomeName === 'mountains' ? (regionRng() < 0.25 ? 'birch' : 'pine')
-            : biomeName === 'meadow' ? (regionRng() < 0.65 ? 'willow' : 'ash')
-              : (regionRng() < 0.5 ? 'oak' : 'pine');
+      // Seasonal gating (mirrors worldGenerator.mjs): no crimson trees in
+      // meadows — the kit TwistedTree reads as autumn and is reserved for its
+      // own biome. Stream discipline: the general branch makes exactly one
+      // regionRng() draw (as the old ternary did) and reuses it for both the
+      // autumn roll and the oak/pine pick, so deterministic region layouts
+      // do not shift — only the variant labels change.
+      let treeVariant;
+      if (biomeName === 'deadlands') treeVariant = 'dead';
+      // snow country mixes living snowpine with dead stands (user ruling):
+      // one extra regionRng() draw per tree in these biomes — deliberate
+      // distribution change, so downstream draws shift only inside snowy
+      // regions' cluster fills.
+      else if (biomeName === 'snow_forest') treeVariant = regionRng() < 0.72 ? 'snowpine' : 'dead';
+      else if (biomeName === 'snowfield') treeVariant = regionRng() < 0.6 ? 'snowpine' : 'dead';
+      else if (biomeName === 'mountains') treeVariant = regionRng() < 0.25 ? 'birch' : 'pine';
+      else if (biomeName === 'meadow') treeVariant = regionRng() < 0.65 ? 'oak' : 'ash';
+      else {
+        const r = regionRng();
+        treeVariant = r < 0.12 ? 'autumn' : (r < 0.56 ? 'oak' : 'pine');
+      }
       const scale = type === 'tree' ? 0.8 + regionRng() * 2.2
         : type === 'boulder' ? 1.25 + regionRng() * 1.75
           : 0.7 + regionRng() * 1.8;
@@ -1414,7 +1519,7 @@ function generateNeighborRegion(rx, rz, ctx) {
 
   // standing stones in quiet grassland
   if (!graveyardHere && regionRng() < 0.35 && lushShare > 0.5) {
-    const site = findSite(regionRng, 6);
+    const site = findSite(regionRng, 6, townBuilt ? { x: townSite.x, z: townSite.z, r: 26 } : null);
     if (site) {
       for (let i = 0; i < 6; i++) {
         addProp('standing_stone', site.x + (regionRng() - 0.5) * 5, site.z + (regionRng() - 0.5) * 5, {
@@ -1450,6 +1555,44 @@ function generateNeighborRegion(rx, rz, ctx) {
   }
   props.push(...bridges);
 
+  // ── 10b. half-tile transitions for water and road edges ──────────────────
+  // Diagonal corner triangles: when a cell sits next to water on both of two
+  // adjacent sides (NW+W, NE+E, SW+W, SE+E), emit a triangular half-tile so
+  // the visual surface steps diagonally instead of as a square corner. Same
+  // rule the home region uses (worldGenerator.mjs) — restored here because
+  // neighbor regions were returning halfTiles: [] and their shorelines and
+  // road corners read blocky next to the home region's.
+  const halfTiles = [];
+  for (let z = 2; z < REGION_H - 2; z++) {
+    for (let x = 2; x < REGION_W - 2; x++) {
+      const cell = z * REGION_W + x;
+      if (waterCells.has(cell) || roadCells.has(cell)) continue;
+      const isWaterNeighbor = (k) => waterCells.has(k);
+      const nW = isWaterNeighbor((z - 1) * REGION_W + x);
+      const sW = isWaterNeighbor((z + 1) * REGION_W + x);
+      const wW = isWaterNeighbor(z * REGION_W + x - 1);
+      const eW = isWaterNeighbor(z * REGION_W + x + 1);
+      if (nW && wW) halfTiles.push({ x, z, type: 'water', orientation: 'nw' });
+      else if (nW && eW) halfTiles.push({ x, z, type: 'water', orientation: 'ne' });
+      else if (sW && wW) halfTiles.push({ x, z, type: 'water', orientation: 'sw' });
+      else if (sW && eW) halfTiles.push({ x, z, type: 'water', orientation: 'se' });
+    }
+  }
+  for (let z = 2; z < REGION_H - 2; z++) {
+    for (let x = 2; x < REGION_W - 2; x++) {
+      const cell = z * REGION_W + x;
+      if (roadCells.has(cell) || waterCells.has(cell)) continue;
+      const nR = roadCells.has((z - 1) * REGION_W + x);
+      const sR = roadCells.has((z + 1) * REGION_W + x);
+      const wR = roadCells.has(z * REGION_W + x - 1);
+      const eR = roadCells.has(z * REGION_W + x + 1);
+      if (nR && wR) halfTiles.push({ x, z, type: 'road', orientation: 'nw' });
+      else if (nR && eR) halfTiles.push({ x, z, type: 'road', orientation: 'ne' });
+      else if (sR && wR) halfTiles.push({ x, z, type: 'road', orientation: 'sw' });
+      else if (sR && eR) halfTiles.push({ x, z, type: 'road', orientation: 'se' });
+    }
+  }
+
   // ── 11. spawn: snapped open cell near the region center ──────────────────
   let spawn = null;
   for (let r = 0; r < 24 && !spawn; r++) {
@@ -1476,7 +1619,7 @@ function generateNeighborRegion(rx, rz, ctx) {
       water: [...waterCells].sort((a, b) => a - b).map((cell) => [cell % REGION_W, Math.floor(cell / REGION_W)]),
       waterSurfaceFt: waterSurface,
       road: [...roadCells].sort((a, b) => a - b).map((cell) => [cell % REGION_W, Math.floor(cell / REGION_W)]),
-      halfTiles: [],
+      halfTiles,
     },
     terrain: { width: REGION_W + 1, height: REGION_H + 1, heightFt: heights },
     biomes: { kinds, cells },
@@ -1491,7 +1634,8 @@ function generateNeighborRegion(rx, rz, ctx) {
     exits: [],
     pointsOfInterest,
     metadata: {
-      townCenter: { x: -999, z: -999 },
+      townCenter: townBuilt ? { x: townSite.x, z: townSite.z } : { x: -999, z: -999 },
+      town: townRecord,
       water: { lakes: [], ponds, river: [] },
       roads: [],
     },

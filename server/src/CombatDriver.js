@@ -8,8 +8,10 @@ import { toggleEquipment, shortRest, longRest } from './rules/CharacterEngine.js
 import { awardVictoryRewards } from './rules/Rewards.js';
 import { chooseAction, buildMonsterToken } from './rules/MonsterAI.js';
 import { think as directorThink } from './rules/DirectorAI.js';
+import { routeStep, aStarPath } from './rules/Nav.js';
+import { thinkAmbient, AMBIENT } from './rules/MonsterAmbient.js';
+import { lightLevelAt, effectiveVisionFt, torchPointsFromTokens } from './rules/Light.js';
 
-const SIGHT_RANGE_FT = 45;     // matches the server's normal player token visibility
 const ALERT_CALL_FT = 40;
 const MONSTER_TURN_MS = 1150;  // cinematic beat before a monster acts
 const BETWEEN_TURNS_MS = 620;  // beat between turns (lets fx play)
@@ -622,6 +624,17 @@ export function attachCombat(gm) {
   }
 
   // ── sight/hearing awareness and alert propagation ────────────────────────
+  // P3.13: sight is light-aware. Light level comes from the shared model in
+  // rules/Light.js (dungeon darkness / day clock / map braziers / equipped
+  // torches), and each monster's reach is its own SRD senses flip-flopped by
+  // that light (normal vision in the light, darkvision in the dark). This is
+  // the same rule tokensForUser uses to reveal monster tokens to clients.
+  const litAt = (x, z) => lightLevelAt({
+    isDungeon: !gm.state.world, x, z,
+    timeMin: (gm.getDayNight ? gm.getDayNight() : gm.state.dayNight).time,
+    mapLights: gm.map?.lights,
+    torchPoints: torchPointsFromTokens(gm.state.tokens),
+  });
   gm.checkAmbush = (noise = null) => {
     if (CE.combatActive(gm.state)) return;
     const players = gm.state.tokens.filter((t) => t.kind === 'player' && t.hp > 0 && !t.deathSaves?.dead);
@@ -639,7 +652,7 @@ export function attachCombat(gm) {
 
     for (const monster of monsters) {
       const seen = players.find((player) =>
-        Math.hypot(monster.x - player.x, monster.z - player.z) <= SIGHT_RANGE_FT &&
+        Math.hypot(monster.x - player.x, monster.z - player.z) <= effectiveVisionFt(monster.senses, litAt(player.x, player.z)) &&
         !lineBlocked(monster, player, walls));
       if (seen) alert(monster, seen.id, 'sight', { x: seen.x, z: seen.z });
       if (noise && canHear(noise, monster, noise.radiusFt, walls)) {
@@ -669,7 +682,7 @@ export function attachCombat(gm) {
     const sourcePlayerId = noise?.actorId;
     const encounterPlayers = players.filter((player) =>
       player.id === sourcePlayerId || encounterMonsters.some((monster) =>
-        Math.hypot(monster.x - player.x, monster.z - player.z) <= SIGHT_RANGE_FT &&
+        Math.hypot(monster.x - player.x, monster.z - player.z) <= effectiveVisionFt(monster.senses, litAt(player.x, player.z)) &&
         !lineBlocked(monster, player, walls)));
     if (encounterPlayers.length) {
       gm.startCombat({
@@ -677,6 +690,75 @@ export function attachCombat(gm) {
         participants: [...monsterIds, ...encounterPlayers.map((player) => player.id)],
       });
     }
+  };
+
+  // ── P3.4 nav facade (state spreads it into the AI's encounterState) ──────
+  // One blocked-predicate source of truth: walls + half-walls + closed doors
+  // (isBlockedAt), prop footprints (overlapsLandscapeProp), region/map bounds.
+  const navBlocked = (cx, cz) => {
+    const x = cx * CELL_FT + CELL_FT / 2, z = cz * CELL_FT + CELL_FT / 2;
+    return gm.isBlockedAt(x, z)
+      || (typeof gm.overlapsLandscapeProp === 'function' && gm.overlapsLandscapeProp(x, z));
+  };
+  gm.state.nav = {
+    step: (fx, fz, tx, tz, budget) => routeStep(navBlocked, fx, fz, tx, tz, budget, { cellFt: CELL_FT }),
+    path: (fx, fz, tx, tz) => aStarPath(navBlocked, fx, fz, tx, tz, { cellFt: CELL_FT }),
+  };
+
+  // ── P3.10 ambient tick: out-of-combat monster life (idle/wander/investigate
+  // /chase → combat) at AMBIENT.TICK_MS. Perception reuses the encounter
+  // rules above (light-aware effectiveVisionFt + lineBlocked). Timer is unref'd
+  // so headless tests never hang on the event loop.
+  // Timer start is deferred to ws.js (gm.startAmbientTick) so the simulation
+  // only ever runs against a real transport — never under tests or doubles.
+  gm.__ambientMem = new Map();
+  gm.startAmbientTick = () => {
+    if (gm.__ambientTimer) return;
+    gm.__ambientTimer = setInterval(gm.ambientTick, AMBIENT.TICK_MS);
+    gm.__ambientTimer.unref?.();
+  };
+  gm.ambientTick = () => {
+    try {
+      if (!gm.map || CE.combatActive(gm.state)) return;
+      const players = gm.state.tokens.filter((t) => t.kind === 'player' && t.hp > 0 && !t.deathSaves?.dead);
+      if (!players.length) return;
+      const walls = gm.getWallsWithDoorState?.() || gm.map.walls || [];
+      const monsters = gm.state.tokens.filter((t) =>
+        t.kind === 'monster' && t.hp > 0 && !t.deathSaves?.dead && !t.hidden && t.wander !== false);
+      let moved = false;
+      for (const m of monsters) {
+        const ctx = {
+          now: Date.now(), rng: Math.random,
+          players: players.map((p) => ({ id: p.id, x: p.x, z: p.z, down: p.hp <= 0 || !!p.deathSaves?.dead })),
+          visible: (p) => Math.hypot(m.x - p.x, m.z - p.z) <= effectiveVisionFt(m.senses, litAt(p.x, p.z)) && !lineBlocked(m, p, walls),
+          blocked: (x, z) => gm.isBlockedAt(x, z)
+            || (typeof gm.overlapsLandscapeProp === 'function' && gm.overlapsLandscapeProp(x, z)),
+          path: gm.state.nav?.path,
+          memory: gm.__ambientMem.get(m.id) || null,
+        };
+        const out = thinkAmbient(m, ctx);
+        gm.__ambientMem.set(m.id, out.memory);
+        if (out.engage) {
+          // close enough to spring the encounter — full awareness rules apply
+          gm.checkAmbush({ x: m.x, z: m.z, actorId: m.id, radiusFt: AMBIENT.AGGRO_FT });
+          if (CE.combatActive(gm.state)) return;
+          continue;
+        }
+        if (out.move && Number.isFinite(out.move.x) && Number.isFinite(out.move.z)) {
+          if (!gm.isBlockedAt(out.move.x, out.move.z)
+            && !(typeof gm.overlapsLandscapeProp === 'function' && gm.overlapsLandscapeProp(out.move.x, out.move.z))
+            && !gm.crossesClosedDoor(m, { x: out.move.x, z: out.move.z })) {
+            m.x = out.move.x; m.z = out.move.z;
+            if (Number.isFinite(out.move.rotY)) m.rotY = out.move.rotY;
+            moved = true;
+          }
+        }
+      }
+      if (moved) {
+        gm.commit({ tokens: gm.state.tokens });
+        gm.checkAmbush?.();   // a wandering monster may spot (or be spotted by) the party
+      }
+    } catch (e) { console.warn('[GM] ambient tick failed', e.message); }
   };
 
   // ── SRD-backed monster spawning ─────────────────────────────────────────

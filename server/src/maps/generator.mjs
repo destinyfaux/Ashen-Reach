@@ -507,16 +507,6 @@ export function generateDungeon({ seed = 1, size = 'medium' } = {}) {
     }
   }
 
-  for (const path of corridorPaths) {
-    if (path.length < 14) continue;
-    for (let i = 5; i < path.length - 3; i += 9) {
-      const p = path[i];
-      if (rooms.some((r) => inRect(r, p.x, p.z))) continue;
-      const sideCell = p.dz !== 0 ? [p.x + 1, p.z] : [p.x, p.z + 1];
-      if (!rooms.some((r) => inRect(r, sideCell[0], sideCell[1]))) addBrazier(sideCell[0], sideCell[1]);
-    }
-  }
-
   // monster spawns: one per encounter module, with the boss staged centrally.
   const monsters = [];
   const monsterAt = (r, mob, name, opts = {}) => {

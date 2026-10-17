@@ -1,5 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  layoutTown, flattenTownFootprint, buildingCorners, rectGap,
+  yawAligned, TOWN_RULES, TOWN_VARIANTS,
+} from './townLayout.mjs';
 
 const WIDTH = 112;
 const HEIGHT = 96;
@@ -76,8 +80,10 @@ function lineCells(a, b, rng, width = 1) {
     const x = a.x + (b.x - a.x) * t +
       Math.sin(t * Math.PI * 2) * Math.min(2.4, Math.hypot(b.x - a.x, b.z - a.z) * 0.018);
     const z = a.z + (b.z - a.z) * t + Math.sin(t * Math.PI * 5) * 0.55 + (rng() - 0.5) * 0.08;
-    for (let dz = -width; dz <= width; dz++) for (let dx = -width; dx <= width; dx++) {
-      if (dx * dx + dz * dz > width * width + 0.35) continue;
+    // width may be a number or a per-sample function (town taper)
+    const w = typeof width === 'function' ? width(x, z) : width;
+    for (let dz = -w; dz <= w; dz++) for (let dx = -w; dx <= w; dx++) {
+      if (dx * dx + dz * dz > w * w + 0.35) continue;
       const cx = Math.round(x + dx), cz = Math.round(z + dz);
       if (cx > 1 && cz > 1 && cx < WIDTH - 2 && cz < HEIGHT - 2) cells.add(cz * WIDTH + cx);
     }
@@ -146,9 +152,25 @@ function makeWorld(seed) {
     [{ x: 56, z: 55 }, { x: 91, z: 34 }],
     [{ x: 56, z: 55 }, { x: 94, z: 77 }],
   ];
-  for (const path of roadPaths) {
-    for (const cell of lineCells(path[0], path[1], rng, path === roadPaths[0] ? 1 : 0)) roadCells.add(cell);
-  }
+  // Roads are boulevards now (user ruling: ~4x wider — the old 1-cell, 5 ft
+  // paths cluttered the road dressing and read like goat trails). width is
+  // the DISC RADIUS in cells, so radius 2 lays a 4-5 cell (≈20-25 ft)
+  // carriageway; disc stamping draws no rng, so every seeded layout keeps
+  // its deterministic draw order (only the town survey sees more road cells).
+  // TOWN TAPER: inside ~14 cells of the plaza the roads keep their EXACT
+  // pre-change widths — a 20-ft road blanket across the town core starves
+  // the P3.8 layout variants of buildable ground (crescent stopped
+  // generating entirely). Open country gets the full boulevard.
+  roadPaths.forEach((path, pi) => {
+    const coreW = pi === 0 ? 1 : 0;   // pre-change widths: south street 3 cells, the rest 1
+    const widthAt = (sx, sz) => {
+      const d = Math.hypot(sx - townCenter.x, sz - townCenter.z);
+      if (d < 14) return coreW;  // town + layout reach: exact pre-change streets
+      if (d < 22) return Math.max(coreW, 1);  // soft ring before the boulevard
+      return 2;                  // open-country boulevard
+    };
+    for (const cell of lineCells(path[0], path[1], rng, widthAt)) roadCells.add(cell);
+  });
 
   const waterCells = new Set();
   const waterSurface = new Array(WIDTH * HEIGHT).fill(null);
@@ -381,7 +403,17 @@ function makeWorld(seed) {
     });
   }
 
+  // Wide-road sweep: disc-stamped roads can graze pond rims, lake edges and
+  // riverbanks outside the bridge corridor. Roads never sit on water (bridge
+  // cells were already de-watered above, so they survive this pass) — strip
+  // any leftover water-road cells so the road narrows to the bank instead.
+  for (const cell of [...roadCells]) {
+    if (waterCells.has(cell)) roadCells.delete(cell);
+  }
+
   // Ensure gradual grades across the entire terrain mesh (<= 4.2 ft step)
+  // (re-runnable: the town pad flatten happens later and needs a final sweep)
+  const enforceGradualGrades = () => {
   for (let iter = 0; iter < 8; iter++) {
     for (let z = 0; z <= HEIGHT; z++) {
       for (let x = 0; x <= WIDTH; x++) {
@@ -401,8 +433,12 @@ function makeWorld(seed) {
       }
     }
   }
+  };
+  enforceGradualGrades();
 
   // Ensure center of lakes and ponds remain depressed below water level
+  // (re-runnable: the town pad flatten happens later and can raise beds)
+  const depressWaterBodyCenters = () => {
   for (const body of allWaterBodies) {
     const cx = Math.round(body.x), cz = Math.round(body.z);
     const maxCenterGround = body.level - 0.4;
@@ -411,8 +447,12 @@ function makeWorld(seed) {
       if (heights[at] > maxCenterGround) heights[at] = maxCenterGround;
     }
   }
+  };
+  depressWaterBodyCenters();
 
-  // Shoreline water surface safety clamp
+  // Shoreline water surface safety clamp (re-runnable: the town pad flatten
+  // happens later and can raise banks, so the clamp runs again after it)
+  const clampShorelineSurfaces = () => {
   for (const cell of waterCells) {
     const x = cell % WIDTH, z = Math.floor(cell / WIDTH);
     const ground = (
@@ -431,6 +471,8 @@ function makeWorld(seed) {
       waterSurface[cell] = Math.min(waterSurface[cell], ground - 0.18);
     }
   }
+  };
+  clampShorelineSurfaces();
 
   const gate = { x: 58, z: 82 };
   const props = [];
@@ -443,23 +485,92 @@ function makeWorld(seed) {
     props.push({ type, x, z, ...options });
   };
 
-  // Town lots are authored as a small deterministic kit; footprints face a
-  // central road and leave walkable yards between buildings.
-  const buildings = [
-    { type: 'building', variant: 'inn', label: 'The Ember & Ash', x: 52.5, z: 49.5, width: 8, depth: 6, rotY: 0 },
-    { type: 'building', variant: 'general_store', label: 'General Store', x: 61.5, z: 50, width: 6, depth: 5, rotY: Math.PI / 2 },
-    { type: 'building', variant: 'smithy', label: 'The Bent Nail', x: 48, z: 58.5, width: 7, depth: 6, rotY: 0 },
-    { type: 'building', variant: 'healer', label: 'Hearth & Remedy', x: 63, z: 59, width: 6, depth: 5, rotY: Math.PI / 2 },
-    { type: 'building', variant: 'house', label: '', x: 46.5, z: 49, width: 5, depth: 5, rotY: Math.PI / 2 },
-    { type: 'building', variant: 'house', label: '', x: 67, z: 50, width: 5, depth: 5, rotY: 0 },
-    { type: 'building', variant: 'house', label: '', x: 45.5, z: 63, width: 6, depth: 5, rotY: 0 },
-    { type: 'building', variant: 'house', label: '', x: 66.5, z: 64, width: 5, depth: 6, rotY: Math.PI / 2 },
-  ];
-  for (const building of buildings) addProp('building', building.x, building.z, building);
-  addProp('well', townCenter.x + 0.5, townCenter.z + 2, { clusterId: 'town-center' });
-  addProp('street_lantern', 56.5, 48.5, { clusterId: 'town-center' });
-  addProp('street_lantern', 56.5, 62.5, { clusterId: 'town-center' });
+  // Town lots are GENERATED (P3.8): the shared layout module enforces the
+  // variant rules (grid/crescent/scattered), yard spacing, road/plaza yaw
+  // alignment and water exclusion, then flattenTownFootprint pads the terrain
+  // under every building so nothing floats. A DEDICATED rng stream keeps every
+  // existing seeded draw sequence (clusters/erratics below) bit-identical.
+  const townRng = mulberry32((seed ^ 0x70bd) >>> 0);
+  const townSurvey = {
+    // 3-arg contract from townLayout: kind 'water' = strict check (hard
+    // blocker), kind 'road' = inset-lattice check (buildings may front road
+    // edges), 2-arg = strict both (plaza/well placement).
+    blocked: (x, z, kind) => {
+      const cx = Math.floor(x), cz = Math.floor(z);
+      if (cx < 2 || cz < 2 || cx >= WIDTH - 2 || cz >= HEIGHT - 2) return true;
+      const cell = cz * WIDTH + cx;
+      if (waterCells.has(cell)) return true;
+      if (kind === 'water') return false;
+      return roadCells.has(cell);
+    },
+    inBounds: (x, z) => x > 2 && z > 2 && x < WIDTH - 2 && z < HEIGHT - 2,
+    heightAt: (x, z) => heights[Math.max(0, Math.min(HEIGHT, Math.round(z))) * (WIDTH + 1) + Math.max(0, Math.min(WIDTH, Math.round(x)))],
+  };
+  // grid axis follows the west road (the settlement's oldest street)
+  const town = layoutTown({
+    rng: townRng, cx: townCenter.x, cz: townCenter.z,
+    roadDir: { x: 12 - 56, z: 54 - 55 }, survey: townSurvey,
+  });
+  if (!town) throw new Error('home town layout failed for this seed');
+  const innBuilding = town.buildings.find((b) => b.variant === 'inn');
+  if (innBuilding) innBuilding.label = 'The Ember & Ash'; // home keeps its name
+  for (const b of town.buildings) addProp('building', b.x, b.z, b);
+  addProp('well', town.well.x, town.well.z, { clusterId: 'town-center' });
+  for (const l of town.lanterns) addProp('street_lantern', l.x, l.z, { clusterId: 'town-center' });
   clusters.push({ id: 'town-center', rule: 'town_center', biome: 'town', x: 56, z: 55, radius: 13 });
+  // Terrain under the town is final here (water carve, bridge leveling, slope
+  // relax and shoreline clamps are all done) — pads cannot bury shorelines
+  // because the survey keeps footprints clear of water cells.
+  flattenTownFootprint(heights, WIDTH + 1, town, { vertexH: HEIGHT + 1 });
+  // Final grade sweep — the comment above always promised one. The pad relax
+  // inside flattenTownFootprint oscillates when a pad sits close to a steep
+  // shore: the pinned pad and the deep lake bed leave too few free vertices
+  // between them, so the ring ping-pongs and a >4.2 ft cliff survives (seen
+  // at a lakeside pad: 25.8 pad vs 14.4 shore with one ring vertex).
+  // Pad interiors are PINNED here too — buildings need exactly flat pads —
+  // and the iteration count is raised so shore vertices can climb to the
+  // pad instead of leaving a cliff at the blend shell.
+  {
+    const padZones = town.buildings.map((b) => {
+      const c = Math.cos(b.rotY || 0), s = Math.sin(b.rotY || 0);
+      return { cx: b.x, cz: b.z, c, s, hx: b.width / 2 + 0.55, hz: b.depth / 2 + 0.55 };
+    });
+    const pinGrid = new Uint8Array((WIDTH + 1) * (HEIGHT + 1));
+    for (let z = 0; z <= HEIGHT; z++) for (let x = 0; x <= WIDTH; x++) {
+      for (const p of padZones) {
+        const wx = x - p.cx, wz = z - p.cz;
+        const lx = wx * p.c - wz * p.s, lz = wx * p.s + wz * p.c;
+        if (Math.abs(lx) <= p.hx && Math.abs(lz) <= p.hz) { pinGrid[z * (WIDTH + 1) + x] = 1; break; }
+      }
+    }
+    for (let iter = 0; iter < 24; iter++) {
+      for (let z = 0; z <= HEIGHT; z++) {
+        for (let x = 0; x <= WIDTH; x++) {
+          const at = z * (WIDTH + 1) + x;
+          const aPin = pinGrid[at];
+          if (x > 0) {
+            const left = at - 1, lPin = pinGrid[left];
+            if (!(aPin && lPin)) {
+              const diff = heights[at] - heights[left];
+              if (diff > 4.2) { if (!aPin) heights[at] = heights[left] + 4.2; else heights[left] = heights[at] - 4.2; }
+              else if (diff < -4.2) { if (!aPin) heights[at] = heights[left] - 4.2; else heights[left] = heights[at] + 4.2; }
+            }
+          }
+          if (z > 0) {
+            const up = at - (WIDTH + 1), uPin = pinGrid[up];
+            if (!(aPin && uPin)) {
+              const diff = heights[at] - heights[up];
+              if (diff > 4.2) { if (!aPin) heights[at] = heights[up] + 4.2; else heights[up] = heights[at] - 4.2; }
+              else if (diff < -4.2) { if (!aPin) heights[at] = heights[up] - 4.2; else heights[up] = heights[at] + 4.2; }
+            }
+          }
+        }
+      }
+    }
+  }
+  clampShorelineSurfaces(); // town pads can raise banks above the water surface
+  depressWaterBodyCenters(); // town pads can raise pond/lake beds
+  const townService = (variant) => town.buildings.find((b) => b.variant === variant);
 
   const makeCluster = (id, biome, x, z, radius, rule, count, variants) => {
     clusters.push({ id, biome, rule, x, z, radius, count, variants });
@@ -473,13 +584,27 @@ function makeWorld(seed) {
       if (waterCells.has(Math.floor(pz) * WIDTH + Math.floor(px)) ||
           roadCells.has(Math.floor(pz) * WIDTH + Math.floor(px))) continue;
       const isNearWater = Math.hypot(px - 18, pz - 26) < 14 || Math.hypot(px - 32, pz - 70) < 14 || Math.hypot(px - 28, pz - 43) < 14 || Math.hypot(px - 75, pz - 62) < 14;
-      const treeVariant = biome === 'deadlands' ? 'dead'
-        : biome === 'snow_forest' ? 'snowpine'
-          : biome === 'mountains' ? (rng() < 0.25 ? 'birch' : 'pine')
-            : biome === 'meadow' ? (rng() < 0.65 ? 'willow' : 'ash')
-              : (rule === 'willow-stand' || isNearWater)
-                ? (rng() < 0.6 ? 'willow' : 'oak')
-                : ['oak', 'pine', 'ash', 'birch'][Math.floor(rng() * 4)];
+      // Seasonal gating: the kit's TwistedTree renders deep crimson (autumn
+      // read), so the legacy 'willow' variant no longer spawns. Meadows stay
+      // fully green (oak/ash both render the green CommonTree pool); autumn
+      // maples are rare accents reserved for forests and riverside stands.
+      // Stream discipline: every branch consumes EXACTLY as many rng() draws
+      // as the old ternary chain (0/0/1/1/1/1) and the general branch reuses
+      // its single draw for both the autumn roll and the species pick, so the
+      // deterministic seeded layouts (rock/twig/spawn positions downstream)
+      // do not shift by a single step — only the variant labels change.
+      let treeVariant;
+      if (biome === 'deadlands') treeVariant = 'dead';
+      else if (biome === 'snow_forest') treeVariant = 'snowpine';
+      else if (biome === 'mountains') treeVariant = rng() < 0.25 ? 'birch' : 'pine';
+      else if (biome === 'meadow') treeVariant = rng() < 0.65 ? 'oak' : 'ash';
+      else if (rule === 'willow-stand' || isNearWater) treeVariant = rng() < 0.6 ? 'autumn' : 'oak';
+      else {
+        const r = rng();
+        treeVariant = r < 0.12
+          ? 'autumn'
+          : ['oak', 'pine', 'ash', 'birch'][Math.min(3, Math.floor((r - 0.12) / 0.88 * 4))];
+      }
       const scale = type === 'tree' ? 0.8 + rng() * 2.2
         : type === 'boulder' ? 1.25 + rng() * 1.75
           : 0.7 + rng() * 1.8;
@@ -673,16 +798,19 @@ function makeWorld(seed) {
       { id: 'cellar-crypt', label: 'Enter the crypt', x: gate.x + 0.5, z: gate.z + 0.5, destinationMapId: 'ashen_cellar' },
     ],
     pointsOfInterest: [
-      { id: 'ember-and-ash', kind: 'inn', label: 'The Ember & Ash', x: 52.5, z: 49.5 },
-      { id: 'general-store', kind: 'general_store', label: 'General Store', x: 61.5, z: 50 },
-      { id: 'bent-nail', kind: 'smithy', label: 'The Bent Nail', x: 48, z: 58.5 },
-      { id: 'hearth-remedy', kind: 'healer', label: 'Hearth & Remedy', x: 63, z: 59 },
+      { id: 'ember-and-ash', kind: 'inn', label: 'The Ember & Ash', x: townService('inn').x, z: townService('inn').z },
+      { id: 'general-store', kind: 'general_store', label: 'General Store', x: townService('general_store').x, z: townService('general_store').z },
+      { id: 'bent-nail', kind: 'smithy', label: 'The Bent Nail', x: townService('smithy').x, z: townService('smithy').z },
+      { id: 'hearth-remedy', kind: 'healer', label: 'Hearth & Remedy', x: townService('healer').x, z: townService('healer').z },
       { id: 'crypt-cemetery', kind: 'graveyard', label: 'Ashen Cemetery', x: gate.x, z: gate.z, exitId: 'cellar-crypt' },
       { id: 'west-road-ruins', kind: 'ruins', label: 'The Old Watch', x: 12, z: 54 },
       { id: 'eastern-caves', kind: 'cave', label: 'The Blackstone Mouth', x: 91, z: 34 },
     ],
     metadata: {
       townCenter,
+      // P3.8: layout record. cx/cz are the PLAZA the layout recentered to —
+      // yaw rules face the plaza, not the historical townCenter.
+      town: { variant: town.variant, axis: { ...town.axis }, cx: town.cx, cz: town.cz },
       water: { lakes: lakeSpecs, ponds: pondSpecs, river: riverPath },
       roads: roadPaths.map((path) => path.map((point) => ({ ...point }))),
     },
@@ -832,6 +960,51 @@ export function validateOverworld(map) {
   if (!props?.some((prop) => prop.type === 'building' && prop.variant === 'general_store')) errors.push('town is missing its store');
   if (!props?.some((prop) => prop.type === 'building' && prop.variant === 'smithy')) errors.push('town is missing its smithy');
   if (!props?.some((prop) => prop.type === 'building' && prop.variant === 'healer')) errors.push('town is missing its healer');
+  // ── P3.8 town construction rules ────────────────────────────────────────
+  const townBuildings = (props || []).filter((p) => p.type === 'building' && p.width && p.depth);
+  const townMeta = map?.metadata?.town;
+  if (townMeta && townBuildings.length) {
+    const townObj = {
+      variant: townMeta.variant,
+      cx: townMeta.cx ?? map.metadata.townCenter?.x,
+      cz: townMeta.cz ?? map.metadata.townCenter?.z,
+      axis: townMeta.axis,
+    };
+    if (!TOWN_VARIANTS.includes(townMeta.variant)) errors.push(`town variant ${townMeta.variant} is not a layout rule`);
+    const heightAtV = (x, z) => {
+      const vx = Math.max(0, Math.min(width, Math.round(x)));
+      const vz = Math.max(0, Math.min(height, Math.round(z)));
+      return terrain?.heightFt?.[vz * (width + 1) + vx];
+    };
+    for (let i = 0; i < townBuildings.length; i++) {
+      const b = townBuildings[i];
+      // true ORIENTED corners (rotated local rect) — the pad flattens the
+      // oriented footprint, and the water sweep clears the oriented footprint
+      const bc = Math.cos(b.rotY || 0), bs = Math.sin(b.rotY || 0);
+      const orientedCorners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ux, uz]) => ({
+        x: b.x + (b.width / 2) * ux * bc + (b.depth / 2) * uz * bs,
+        z: b.z - (b.width / 2) * ux * bs + (b.depth / 2) * uz * bc,
+      }));
+      for (const c of orientedCorners) {
+        if (water.has(key(Math.floor(c.x), Math.floor(c.z)))) {
+          errors.push(`building ${b.variant} footprint crosses water at ${Math.floor(c.x)},${Math.floor(c.z)}`);
+        }
+      }
+      // never floats: the terrain across the footprint is the flat pad
+      const hs = orientedCorners.map((c) => heightAtV(c.x, c.z));
+      if (hs.some((h) => typeof h !== 'number')) errors.push(`building ${b.variant} has no terrain under a corner`);
+      else if (Math.max(...hs) - Math.min(...hs) > 1.5) {
+        errors.push(`building ${b.variant} sits on unflat ground (${(Math.max(...hs) - Math.min(...hs)).toFixed(2)} ft)`);
+      }
+      if (!yawAligned(b, townObj)) errors.push(`building ${b.variant} yaw violates the ${townMeta.variant} alignment rule`);
+      for (let j = i + 1; j < townBuildings.length; j++) {
+        const gap = rectGap(b, townBuildings[j]);
+        if (gap >= 0 && gap < TOWN_RULES.MIN_YARD_GAP - 1e-6) {
+          errors.push(`buildings ${b.variant}/${townBuildings[j].variant} yard gap ${gap.toFixed(2)} < ${TOWN_RULES.MIN_YARD_GAP}`);
+        }
+      }
+    }
+  }
   if (!clusters?.length) errors.push('world has no prop clusters');
   if (!pointsOfInterest?.some((poi) => poi.kind === 'graveyard') ||
       !pointsOfInterest?.some((poi) => poi.kind === 'ruins') ||
