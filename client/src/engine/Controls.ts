@@ -19,6 +19,7 @@ export class Controls {
   private jumpHeight = 0;
   private jumpVelocity = 0;
   private jumpRequested = false;
+  private wasMoving = false;
   private correction: { x: number; z: number } | null = null;
   private offMoveRejected: () => void;
 
@@ -234,13 +235,20 @@ export class Controls {
           sendMove(nx, nz, a.group.rotation.y);
         }
       } else {
-        // still announce position occasionally so server stays truthful
-        this.netAccum += dt;
-        if (this.netAccum > 0.5) {
+        if (this.wasMoving) {
+          // Immediately announce final resting position so server and peers never freeze at an older step
           this.netAccum = 0;
           sendMove(a.group.position.x, a.group.position.z, a.group.rotation.y);
+        } else {
+          // still announce position occasionally so server stays truthful
+          this.netAccum += dt;
+          if (this.netAccum > 0.5) {
+            this.netAccum = 0;
+            sendMove(a.group.position.x, a.group.position.z, a.group.rotation.y);
+          }
         }
       }
+      this.wasMoving = moving;
 
     }
 
@@ -248,6 +256,17 @@ export class Controls {
     a.data.x = a.group.position.x;
     a.data.z = a.group.position.z;
     a.data.rotY = a.group.rotation.y;
+    // Keep local player position in store in sync so minimap / hud / store are seamless
+    const myId = this.tokenId;
+    if (myId) {
+      const st = useGame.getState();
+      const meTok = st.tokens.find(t => t.id === myId);
+      if (meTok && (meTok.x !== a.group.position.x || meTok.z !== a.group.position.z)) {
+        meTok.x = a.group.position.x;
+        meTok.z = a.group.position.z;
+        meTok.rotY = a.group.rotation.y;
+      }
+    }
   }
 
   dispose() {

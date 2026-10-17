@@ -251,8 +251,17 @@ function dispatch(ev: string, data: any) {
       const mapId = data.mapId as string | undefined;
       const mapChanged = !!mapId && mapId !== currentMapId;
       if (data.tokens) {
-        patch.tokens = data.tokens;
-        lastTokens = data.tokens;
+        const myTokenId = useGame.getState().myTokenId;
+        const currentTokens = useGame.getState().tokens;
+        const myCurrentToken = myTokenId ? currentTokens.find((t: any) => t.id === myTokenId) : null;
+        const mergedTokens = data.tokens.map((t: any) => {
+          if (t.id === myTokenId && myCurrentToken && Number.isFinite(myCurrentToken.x)) {
+            return { ...t, x: myCurrentToken.x, z: myCurrentToken.z, rotY: myCurrentToken.rotY };
+          }
+          return t;
+        });
+        patch.tokens = mergedTokens;
+        lastTokens = mergedTokens;
         if (!mapChanged) Bus.emit(EV.TOKENS_SYNC, data.tokens);
       }
       if (data.chat) patch.chat = data.chat;

@@ -13,6 +13,7 @@ import { B, HumanoidRig } from './rig/HumanoidRig';
 import { Animator } from './rig/animations';
 import type { WeaponStyle } from './rig/animations';
 import { buildEquipment } from './rig/equipment';
+import { useGame } from '../game/store';
 
 const WEAPON_STYLE: Record<string, WeaponStyle> = {
   warden: 'sword', shadowdancer: 'dagger', ashen_mage: 'staff', pale_priest: 'mace',
@@ -28,7 +29,9 @@ const MAX_REMOTE_POSITION_SAMPLES = 8;
 // world, DM warps) can move the hero farther than legit prediction drift —
 // beyond this delta the sync snaps the local figure instead of waiting for a
 // move:rejected correction the player would have to trigger by walking.
-const LOCAL_TELEPORT_FT = 32;
+// Set generously (120 ft ≈ 24 tiles) so normal walking, sprinting, and latency
+// never falsely snap or rubberband the local hero.
+const LOCAL_TELEPORT_FT = 120;
 
 function hashStr(s: string): number {
   let h = 2166136261;
@@ -124,7 +127,8 @@ export class Actors {
         group.add(shadow);
 
         // team ring: player colour / blood for monsters / ember for the local hero
-        const isLocal = t.id === ('tok_' + String((this.eng as any).controls?.tokenId ?? '').slice(4));
+        const myId = this.eng.controls?.tokenId || this.eng.myTokenId || useGame.getState().myTokenId;
+        const isLocal = t.id === myId;
         const ringColor = t.kind === 'player'
           ? new THREE.Color(t.color || '#c9a227')
           : new THREE.Color(0x7a1f1f);
@@ -177,31 +181,47 @@ export class Actors {
         a.condFX.setConditions(t.conditions || []);
       } else {
         const prevConds = (a.data.conditions || []) as string[];
-        if (t.id !== this.eng.controls.tokenId &&
+        const myId = this.eng.controls?.tokenId || this.eng.myTokenId || useGame.getState().myTokenId;
+        const isLocal = t.id === myId;
+        if (!isLocal &&
             (t.x !== a.data.x || t.z !== a.data.z || t.rotY !== a.data.rotY)) {
           const receivedAt = performance.now();
           const previous = a.remotePositions[a.remotePositions.length - 1];
+          if (!previous || receivedAt - previous.at > 350) {
+            // After an idle pause or on first move, anchor the beginning of interpolation
+            // to the actor's current rendered position so it glides smoothly without jumping.
+            a.remotePositions.length = 0;
+            a.remotePositions.push({
+              x: a.group.position.x,
+              z: a.group.position.z,
+              rotY: a.group.rotation.y,
+              at: receivedAt - REMOTE_POSITION_DELAY_MS,
+            });
+          }
           a.remotePositions.push({
             x: t.x, z: t.z, rotY: t.rotY || 0,
-            at: Math.max(receivedAt, previous.at + 0.001),
+            at: Math.max(receivedAt, (a.remotePositions[a.remotePositions.length - 1]?.at || receivedAt) + 0.001),
           });
           if (a.remotePositions.length > MAX_REMOTE_POSITION_SAMPLES) {
             a.remotePositions.splice(0, a.remotePositions.length - MAX_REMOTE_POSITION_SAMPLES);
           }
         }
         // Local-token teleport snap: the hero is prediction-driven and never
-        // takes positions from TOKENS_SYNC, so a server-side restore (dungeon
-        // exit re-entry) would otherwise leave the figure at its dungeon-era
-        // spot until the player happened to walk into a move:rejected.
-        if (t.id === this.eng.controls.tokenId && Number.isFinite(t.x) && Number.isFinite(t.z) &&
-            Math.hypot(t.x - a.data.x, t.z - a.data.z) > LOCAL_TELEPORT_FT) {
+        // takes positions from TOKENS_SYNC during normal walking. Only true
+        // server-side warps (dungeon transitions, DM warps > 100ft) snap the figure.
+        if (isLocal && Number.isFinite(t.x) && Number.isFinite(t.z) &&
+            Math.hypot(t.x - a.group.position.x, t.z - a.group.position.z) > LOCAL_TELEPORT_FT) {
           a.group.position.set(t.x, 0, t.z);
           a.group.rotation.y = t.rotY || 0;
           a.lastX = t.x; a.lastZ = t.z; a.lastRotY = t.rotY || 0;
           a.remotePositions.length = 0;
           a.remotePositions.push({ x: t.x, z: t.z, rotY: t.rotY || 0, at: performance.now() });
         }
-        a.data = t;
+        if (isLocal) {
+          a.data = { ...t, x: a.group.position.x, z: a.group.position.z, rotY: a.group.rotation.y };
+        } else {
+          a.data = t;
+        }
         // P2.5: condition auras — diff, refresh, burst on newly APPLIED
         const newConds = (t.conditions || []) as string[];
         if (JSON.stringify(newConds) !== JSON.stringify(prevConds)) a.condFX.setConditions(newConds);
@@ -299,8 +319,9 @@ export class Actors {
     const windX = 1.1 + Math.sin(t * 0.23) * 0.7;
     const windZ = 0.5 + Math.cos(t * 0.31) * 0.5;
     const remoteRenderTime = performance.now() - REMOTE_POSITION_DELAY_MS;
+    const myId = this.eng.controls?.tokenId || this.eng.myTokenId || useGame.getState().myTokenId;
     for (const [id, a] of this.actors) {
-      const isLocal = id === this.eng.controls.tokenId;
+      const isLocal = id === myId;
       const d = a.data;
       // P3.13: fog of war removed — monsters render whenever the server sends
       // them (reveal is light-aware, server rules/Light.js). Unlit figures in
@@ -340,16 +361,24 @@ export class Actors {
         while (samples.length > 2 && samples[1].at <= remoteRenderTime) samples.shift();
         const from = samples[0];
         const to = samples[1];
-        if (from && remoteRenderTime >= from.at) {
-          const alpha = to
-            ? Math.max(0, Math.min(1, (remoteRenderTime - from.at) / (to.at - from.at)))
-            : 1;
-          a.group.position.x = from.x + ((to?.x ?? from.x) - from.x) * alpha;
-          a.group.position.z = from.z + ((to?.z ?? from.z) - from.z) * alpha;
-          let dy = (to?.rotY ?? from.rotY) - from.rotY;
-          while (dy > Math.PI) dy -= Math.PI * 2;
-          while (dy < -Math.PI) dy += Math.PI * 2;
-          a.group.rotation.y = from.rotY + dy * alpha;
+        if (from) {
+          if (!to || remoteRenderTime <= from.at) {
+            a.group.position.x = from.x;
+            a.group.position.z = from.z;
+            a.group.rotation.y = from.rotY;
+          } else if (remoteRenderTime >= to.at) {
+            a.group.position.x = to.x;
+            a.group.position.z = to.z;
+            a.group.rotation.y = to.rotY;
+          } else {
+            const alpha = Math.max(0, Math.min(1, (remoteRenderTime - from.at) / (to.at - from.at)));
+            a.group.position.x = from.x + (to.x - from.x) * alpha;
+            a.group.position.z = from.z + (to.z - from.z) * alpha;
+            let dy = to.rotY - from.rotY;
+            while (dy > Math.PI) dy -= Math.PI * 2;
+            while (dy < -Math.PI) dy += Math.PI * 2;
+            a.group.rotation.y = from.rotY + dy * alpha;
+          }
         }
       }
       const groundY = this.eng.grid.terrainHeightAt(a.group.position.x, a.group.position.z);
