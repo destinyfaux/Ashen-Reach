@@ -20,7 +20,8 @@ import { useGame } from '../game/store';
 import type { DoorState } from '../game/store';
 import type { MapDef } from './types';
 import { playSfx, ELEMENT_SFX, setMusicScene } from '../audio/music';
-import { getAreaTileSet } from './materials';
+import type { MusicScene } from '../audio/music';
+import { resolveZoneMusic } from '../audio/zoneMusic';
 import { setAssetRenderer } from './assets';
 import { acquireProgramsAsync } from './assets';
 import { worldProbe } from './worldProbe';
@@ -52,7 +53,13 @@ export class Engine {
   private disposed = false;
   private lastEnv = { time: 21 * 60, weather: 'clear', mode: 'cycle' };
   private timeAccum = 0;
-  private areaMusic: 'crypt' | 'town' = 'crypt';
+  private areaMusic: MusicScene = 'town';
+  private currentMusicScene: MusicScene = 'town';
+  private candidateMusicScene: MusicScene = 'town';
+  private candidateMusicTimer = 0;
+  private musicCheckTimer = 0;
+  private victoryTimer = 0;
+  private activeMapDef: MapDef | null = null;
   private doorOpenByWall = new Map<number, boolean>();
   private themeRegionId: string | null = null;   // atmosphere rebuild guard (streamed world)
   private worldEntered = false;                  // camera drop only on first overworld entry
@@ -193,8 +200,22 @@ export class Engine {
 
   private wire() {
     useGame.subscribe((state, previous) => {
-      if (state.initiative !== previous.initiative || state.phase !== previous.phase) {
-        setMusicScene(state.phase === 'playing' ? (state.initiative ? 'combat' : this.areaMusic) : 'menu');
+      if (state.phase !== previous.phase) {
+        if (state.phase !== 'playing') {
+          setMusicScene('menu');
+        } else {
+          this.syncMusic(true);
+        }
+        return;
+      }
+      if (state.initiative !== previous.initiative) {
+        if (previous.initiative && !state.initiative && state.phase === 'playing') {
+          // Combat victory stinger
+          this.victoryTimer = 12;
+        } else if (state.initiative) {
+          this.victoryTimer = 0;
+        }
+        this.syncMusic(true);
       }
     });
     // net → engine
@@ -310,9 +331,8 @@ export class Engine {
     this.grid.build(map);
     this.actors.clearAll();
     this.world.onMapTheme(map);
-    this.areaMusic = getAreaTileSet(map).ambience === 'town' ? 'town' : 'crypt';
-    const state = useGame.getState();
-    setMusicScene(state.initiative ? 'combat' : this.areaMusic);
+    this.activeMapDef = map;
+    this.syncMusic(true);
     this.controls.bindToken(this.myTokenId);
     // drop camera at party spawn for the join backdrop (indoor-safe height)
     const sp = map.spawns.party[0];
@@ -336,9 +356,8 @@ export class Engine {
       if (def && this.themeRegionId !== map.id) {
         this.themeRegionId = map.id;
         this.world.onMapTheme(def, map.worldOriginFt || { x: 0, z: 0 });
-        this.areaMusic = getAreaTileSet(def).ambience === 'town' ? 'town' : 'crypt';
-        const state = useGame.getState();
-        setMusicScene(state.initiative ? 'combat' : this.areaMusic);
+        this.activeMapDef = def;
+        this.syncMusic(true);
       }
       if (!this.worldEntered) {
         this.worldEntered = true;
@@ -435,10 +454,80 @@ export class Engine {
     this.vision.update(dt);
     this.effects.update(dt);
     this.cameraRig.update(dt);
+
+    // Dynamic zone & region music progression
+    if (this.victoryTimer > 0) {
+      this.victoryTimer = Math.max(0, this.victoryTimer - dt);
+      if (this.victoryTimer === 0) this.syncMusic(true);
+    }
+    this.candidateMusicTimer += dt;
+    this.musicCheckTimer += dt;
+    if (this.musicCheckTimer >= 0.25) {
+      this.musicCheckTimer = 0;
+      this.syncMusic(false);
+    }
+
     if (this.composer) {
       this.composer.render();
     } else {
       this.renderer.render(this.scene, this.camera);
+    }
+  }
+
+  /** Evaluates current player position and state against regions/zones, switching music scenes when appropriate. */
+  private syncMusic(immediate = false) {
+    const state = useGame.getState();
+    if (state.phase !== 'playing') return;
+
+    let px = 0, pz = 0;
+    const myActor = this.myTokenId ? this.actors.get(this.myTokenId) : null;
+    if (myActor) {
+      px = myActor.group.position.x;
+      pz = myActor.group.position.z;
+    } else if (this.activeMapDef?.spawns.party[0]) {
+      const sp = this.activeMapDef.spawns.party[0];
+      const orig = this.activeMapDef.worldOriginFt || { x: 0, z: 0 };
+      px = orig.x + sp[0] * 5;
+      pz = orig.z + sp[1] * 5;
+    }
+
+    const scene = resolveZoneMusic({
+      playerX: px,
+      playerZ: pz,
+      map: this.activeMapDef || this.grid.map,
+      regions: this.grid.regions,
+      worldMode: this.grid.worldMode,
+      inCombat: Boolean(state.initiative),
+      tokens: state.tokens,
+      myTokenId: this.myTokenId,
+      victoryCooldown: this.victoryTimer,
+    });
+
+    if (scene !== 'combat' && scene !== 'boss' && scene !== 'victory' && scene !== 'gameover') {
+      this.areaMusic = scene;
+    }
+
+    if (immediate || scene === 'combat' || scene === 'boss' || scene === 'gameover' || scene === 'victory') {
+      this.currentMusicScene = scene;
+      this.candidateMusicScene = scene;
+      this.candidateMusicTimer = 0;
+      setMusicScene(scene);
+    } else {
+      if (scene !== this.currentMusicScene) {
+        if (scene === this.candidateMusicScene) {
+          // Stable candidate for 0.6s -> smoothly crossfade into the new area track
+          if (this.candidateMusicTimer >= 0.6) {
+            this.currentMusicScene = scene;
+            setMusicScene(scene);
+          }
+        } else {
+          this.candidateMusicScene = scene;
+          this.candidateMusicTimer = 0;
+        }
+      } else {
+        this.candidateMusicScene = scene;
+        this.candidateMusicTimer = 0;
+      }
     }
   }
 

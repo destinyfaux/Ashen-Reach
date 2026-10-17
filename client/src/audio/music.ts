@@ -1267,6 +1267,10 @@ export function setMusicScene(next: MusicScene) {
   if (enabled) startTrack();
 }
 
+export function getMusicScene(): MusicScene {
+  return scene;
+}
+
 export function getAudioSettings() {
   return { ...settings, enabled };
 }
