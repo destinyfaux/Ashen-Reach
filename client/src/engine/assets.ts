@@ -153,8 +153,20 @@ function registerKit(scene: THREE.Object3D): void {
     // planes that must read from both sides, and the cutout must never be
     // dropped by a material-path refactor. Bark/trunk materials (alphaTest 0)
     // keep their authored shading untouched.
+    // Guard: kit models with erroneous alphaMode (e.g. Bark_NormalTree in
+    // nature.glb) must be sanitized so solid wood trunks never receive
+    // transparency, alphaTest discarding, or double-sided self-shadowing.
     for (const mat of materials) {
-      if (mat.alphaTest > 0) mat.side = THREE.DoubleSide;
+      const isBark = !!mat.name && /bark|trunk/i.test(mat.name);
+      if (isBark) {
+        mat.alphaTest = 0;
+        mat.transparent = false;
+        mat.depthWrite = true;
+        mat.side = THREE.FrontSide;
+        mat.needsUpdate = true;
+      } else if (mat.alphaTest > 0) {
+        mat.side = THREE.DoubleSide;
+      }
     }
     const merged = harmonizeAndMerge(parts);
     if (!merged) continue;

@@ -60,7 +60,7 @@ const FOREST_ROCK_MODELS = ['Rock_Medium_1', 'Rock_Medium_2', 'Rock_Medium_3'];
 // scatterAsset normalizes model height to ROCK_EMIT.height, so at scale s a
 // rock is ≈ 2.6·s tall with a ≈ 1.9·s half-extent footprint — the collider
 // math below reads off those two numbers so boxes hug the visible mesh.
-const ROCK_EMIT = { height: 2.6, sink: 0.14, castShadow: true };
+const ROCK_EMIT = { height: 2.6, sink: 0.32, castShadow: true };
 const ROCK_HALF_PER_S = 1.9;   // collider half-extent per unit scale
 
 // Min distance between cluster CENTERS, in world feet. Server-placed forest
@@ -117,7 +117,7 @@ function spawnMediumRockCluster(
     const quat = new THREE.Quaternion().setFromUnitVectors(UP, normal)
       .multiply(new THREE.Quaternion().setFromAxisAngle(UP, yaw));
     const jit = 0.88 + rand() * 0.12;
-    out.push({ x: px, y: ground + 0.05, z: pz, s, rx: 0, ry: 0, rz: 0, quat, r: jit, g: jit, b: jit });
+    out.push({ x: px, y: ground, z: pz, s, rx: 0, ry: 0, rz: 0, quat, r: jit, g: jit, b: jit });
   };
 
   // Anchor: a proper LARGE rock now (2.6-4.0 scale ≈ 6.8-10.4 ft tall). The
