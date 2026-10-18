@@ -11,6 +11,7 @@ import { think as directorThink } from './rules/DirectorAI.js';
 import { routeStep, aStarPath } from './rules/Nav.js';
 import { thinkAmbient, AMBIENT } from './rules/MonsterAmbient.js';
 import { lightLevelAt, effectiveVisionFt, torchPointsFromTokens } from './rules/Light.js';
+import { isMonsterBannedAt, chooseMonsterForBiome, getSpawnTableAt } from './rules/SpawnRules.js';
 
 const ALERT_CALL_FT = 40;
 const MONSTER_TURN_MS = 1150;  // cinematic beat before a monster acts
@@ -717,6 +718,23 @@ export function attachCombat(gm) {
     gm.__ambientTimer = setInterval(gm.ambientTick, AMBIENT.TICK_MS);
     gm.__ambientTimer.unref?.();
   };
+  gm.biomeAt = (x, z) => {
+    if (gm.map?.biomes?.kinds && gm.map?.biomes?.cells) {
+      const cx = Math.floor(x / CELL_FT), cz = Math.floor(z / CELL_FT);
+      if (cx >= 0 && cz >= 0 && cx < gm.map.size.w && cz < gm.map.size.h) {
+        const idx = gm.map.biomes.cells[cz * gm.map.size.w + cx];
+        return gm.map.biomes.kinds[idx] || 'meadow';
+      }
+    }
+    return 'meadow';
+  };
+  gm.isMonsterBannedAt = (monsterId, x, z) => {
+    const biome = gm.biomeAt(x, z);
+    const shoreType = gm.shoreTypeAt ? gm.shoreTypeAt(x, z) : null;
+    const depthTier = gm.lakeDepthTierAt ? gm.lakeDepthTierAt(x, z) : null;
+    return isMonsterBannedAt(monsterId, biome, { shoreType, depthTier });
+  };
+
   gm.ambientTick = () => {
     try {
       if (!gm.map || CE.combatActive(gm.state)) return;
@@ -733,6 +751,7 @@ export function attachCombat(gm) {
           visible: (p) => Math.hypot(m.x - p.x, m.z - p.z) <= effectiveVisionFt(m.senses, litAt(p.x, p.z)) && !lineBlocked(m, p, walls),
           blocked: (x, z) => gm.isBlockedAt(x, z)
             || (typeof gm.overlapsLandscapeProp === 'function' && gm.overlapsLandscapeProp(x, z)),
+          isBanned: (x, z) => gm.isMonsterBannedAt(m.monsterId || m.id, x, z),
           path: gm.state.nav?.path,
           memory: gm.__ambientMem.get(m.id) || null,
         };
@@ -763,7 +782,16 @@ export function attachCombat(gm) {
 
   // ── SRD-backed monster spawning ─────────────────────────────────────────
   gm.spawnMonster = (s = {}) => {
-    const entry = s.monsterId ? gm.monsterEntry(s.monsterId) : null;
+    let monsterId = s.monsterId;
+    if (!monsterId && (s.x != null && s.z != null)) {
+      const wx = s.worldCoords ? Number(s.x) : Number(s.x) * 5;
+      const wz = s.worldCoords ? Number(s.z) : Number(s.z) * 5;
+      const biome = gm.biomeAt(wx, wz);
+      const shoreType = gm.shoreTypeAt ? gm.shoreTypeAt(wx, wz) : null;
+      const depthTier = gm.lakeDepthTierAt ? gm.lakeDepthTierAt(wx, wz) : null;
+      monsterId = chooseMonsterForBiome(biome, { shoreType, depthTier });
+    }
+    const entry = monsterId ? gm.monsterEntry(monsterId) : null;
     let tok;
     if (entry) {
       try {

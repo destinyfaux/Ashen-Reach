@@ -91,6 +91,8 @@ export class GameManager {
     this.regionProps = new Map();    // "rx,rz" -> world-ft prop colliders
     this.worldPatch = null;          // pending focus-change payload consumed by ws.js
     if (startMapId === 'ashen_reach') this.initWorld();
+    this.shoreTypeAt = (x, z) => this.worldCtx?.shoreTypeAt?.(x, z) || null;
+    this.lakeDepthTierAt = (x, z) => this.worldCtx?.lakeDepthTierAt?.(x, z) || null;
     // director options feed (spawn points from the current map)
     this.directorOpts = () => ({
       spawnPoints: (this.map?.spawns?.monsters || []).map((s) => ({

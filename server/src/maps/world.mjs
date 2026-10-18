@@ -38,6 +38,10 @@
 // on which other regions were generated first.
 
 import { layoutTown, flattenTownFootprint, siteSupportsTown } from './townLayout.mjs';
+import {
+  buildGrandLakes, grandLakeDistance, grandLakeDepthTier,
+  grandLakeShoreType, isGrandLakeIsland,
+} from './worldGrandLakes.mjs';
 
 const CELL_FT = 5;
 export const REGION_W = 112;
@@ -45,8 +49,12 @@ export const REGION_H = 96;
 export const WORLD_SEED = 73021;
 
 const CLUSTER_VARIANTS_FALLBACK = ['rock', 'twig'];
-// Same order as worldGenerator.BIOMES so per-cell indices stay comparable.
-const BIOME_ORDER = ['meadow', 'forest', 'snow_forest', 'snowfield', 'deadlands', 'mountains', 'town', 'graveyard', 'ruins'];
+// Same order as worldGenerator.BIOMES for first 9; new biomes appended cleanly.
+const BIOME_ORDER = [
+  'meadow', 'forest', 'snow_forest', 'snowfield', 'deadlands',
+  'mountains', 'town', 'graveyard', 'ruins',
+  'swamp', 'volcanic', 'coastal',
+];
 const BIOME_INDEX = Object.fromEntries(BIOME_ORDER.map((b, i) => [b, i]));
 
 // ── deterministic noise (identical formulas to worldGenerator.mjs) ─────────
@@ -199,29 +207,56 @@ function snowWeight(gx, gz, seed) {
   return smoothstep(0.52, 0.64, field) * (1 - homeHalo(gx, gz));
 }
 
+function swampWeight(gx, gz, seed) {
+  const elev = baseElevation(gx, gz, seed);
+  const flat = 1 - smoothstep(4, 18, elev);
+  const wet = smoothstep(0.50, 0.70, fbm(gx, gz, 750, seed + 8001, 3));
+  const moist = forestWeight(gx, gz, seed);
+  return flat * wet * (0.35 + 0.65 * moist) * (1 - homeHalo(gx, gz));
+}
+
+function volcanicWeight(gx, gz, seed) {
+  const hotspot = smoothstep(0.58, 0.76, fbm(gx, gz, 850, seed + 9001, 2));
+  const mountain = mountainWeight(gx, gz, seed);
+  const blight = blightWeight(gx, gz, seed);
+  const hot = Math.max(hotspot * (0.35 + 0.65 * mountain), blight * hotspot * 1.2);
+  return hot * (1 - homeHalo(gx, gz));
+}
+
+function coastalWeight(gx, gz, grandLakes) {
+  if (!grandLakes || !grandLakes.length) return 0;
+  for (const lake of grandLakes) {
+    const d = grandLakeDistance(lake, gx, gz);
+    if (d >= 0.88 && d <= 1.18) {
+      return 1.0 - Math.abs(d - 1.03) / 0.15;
+    }
+  }
+  return 0;
+}
+
 // Discrete biome for a world point (cell centers / region centers).
-// Mountains take their skirt as forest; blight wins over forest; snow
-// splits into snowy woods or open tundra by moisture; the rest is a
-// moisture split between forest and meadow.
-function classifyBiome(gx, gz, seed) {
+// Priority: volcanic > mountains > deadlands > swamp > coastal > snow > forest > meadow
+export function classifyBiome(gx, gz, seed, grandLakes = []) {
   const halo = homeHalo(gx, gz);
   const wM = mountainWeight(gx, gz, seed);
   const wB = blightWeight(gx, gz, seed);
   const wS = snowWeight(gx, gz, seed);
   const moist = forestWeight(gx, gz, seed);
+  const wV = volcanicWeight(gx, gz, seed);
+  const wSwamp = swampWeight(gx, gz, seed);
+  const wCoast = coastalWeight(gx, gz, grandLakes);
+
   if (halo > 0.86 && wM < 0.02 && wB < 0.02) {
     return 'meadow';
   }
+  if (wV > 0.52) return 'volcanic';
   if (wM > 0.58) return 'mountains';
   if (wB > 0.52) return 'deadlands';
+  if (wSwamp > 0.48) return 'swamp';
+  if (wCoast > 0.40) return 'coastal';
   if (wM > 0.34 && wB < 0.4) return 'forest';
   if (wS > 0.55) return moist > 0.5 ? 'snow_forest' : 'snowfield';
-  // Snow skirt (user ruling: snow biomes are NEVER allowed next to meadow —
-  // the transition read as a jarring white wall). The band below snow weight
-  // 0.55 classifies as cold conifer forest, so every approach to snow
-  // country crosses a forest belt (measured ≈20 cells wide at the field's
-  // mean gradient) instead of slamming meadow into snowfield. Inside the
-  // home halo wS ≈ 0, so home meadows are untouched.
+  // Snow skirt
   if (wS > 0.45) return 'forest';
   if (moist > 0.5 + halo * 0.12) return 'forest';
   return 'meadow';
@@ -308,6 +343,19 @@ function worldElevation(gx, gz, seed) {
     e = flat + spike * wB * (1 - wM);
   }
 
+  // volcanic: dark basalt ridges and vents
+  const wV = volcanicWeight(gx, gz, seed);
+  if (wV > 0.001) {
+    const basalt = Math.pow(Math.max(0, fbm(gx, gz, 34, seed + 9101, 2) - 0.52) / 0.48, 1.3) * 16;
+    e += basalt * wV * (1 - wM);
+  }
+
+  // swamp: low marshy settling
+  const wSwamp = swampWeight(gx, gz, seed);
+  if (wSwamp > 0.001) {
+    e = lerp(e, 3.5 + (noise(gx, gz, 24, seed + 8051) - 0.5) * 2.0, wSwamp * 0.65 * (1 - wM));
+  }
+
   e = Math.max(0, e);
   return lerp(e, baseElevation(gx, gz, seed), seam);
 }
@@ -367,6 +415,10 @@ function homeRectClearance(x, z) {
 }
 
 function lakeTouches(body, x, z, stretch = 1.0) {
+  if (body.grand) {
+    if (isGrandLakeIsland(body, x, z)) return false;
+    return grandLakeDistance(body, x, z) < stretch;
+  }
   const dx = (x - body.x) / (body.rx * stretch);
   const dz = (z - body.z) / (body.rz * stretch);
   return dx * dx + dz * dz < 1;
@@ -450,6 +502,17 @@ function buildWorldWater(homeDef, seed, elevationAt, mountainAt) {
       x: c.cx, z: c.cz, rx, rz, level, kind: 'lake', big: true,
     });
   }
+
+  // ── grand lakes: multi-region freshwater seas ───────────────────────────
+  const grandLakes = buildGrandLakes({
+    seed,
+    elevationAt,
+    mountainAt,
+    volcanicAt: (x, z) => volcanicWeight(x, z, seed),
+    swampAt: (x, z) => swampWeight(x, z, seed),
+    forestAt: (x, z) => forestWeight(x, z, seed),
+  });
+  lakes.push(...grandLakes);
 
   // ── world rivers: valley-seeking descent from highland sources into lakes ─
   // Routing is a hill-descending walk biased toward the source→lake chord:
@@ -771,11 +834,27 @@ export function getWorldContext({ seed = WORLD_SEED, homeDef = null } = {}) {
     return false;
   };
   const roads = buildWorldRoads(homeDef, seed, waterAt);
+  const grandLakes = lakes.filter((l) => l.grand);
   worldCtxCache = {
     seed, homeDef, rivers, lakes, roads, elevationAt, mountainAt,
     baseAt: (x, z) => baseElevation(x, z, seed),
     waterAt,
     riverSampleGrid: buildRiverGrid(rivers),
+    grandLakes,
+    shoreTypeAt: (x, z) => {
+      for (const lake of grandLakes) {
+        const d = grandLakeDistance(lake, x, z);
+        if (d >= 0.85 && d <= 1.25) return grandLakeShoreType(lake, x, z);
+      }
+      return null;
+    },
+    lakeDepthTierAt: (x, z) => {
+      for (const lake of grandLakes) {
+        const tier = grandLakeDepthTier(lake, x, z);
+        if (tier) return tier;
+      }
+      return null;
+    },
   };
   return worldCtxCache;
 }
@@ -818,6 +897,13 @@ function riverNear(ctx, x, z) {
  *  Returns the water surface level (ft) or null when the cell is dry. */
 export function worldWaterCellAt(ctx, wx, wz) {
   for (const lake of ctx.lakes) {
+    if (lake.grand) {
+      if (Math.abs(wx - lake.x) > lake.rx * 1.35 || Math.abs(wz - lake.z) > lake.rz * 1.35) continue;
+      if (isGrandLakeIsland(lake, wx, wz)) continue;
+      const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.08;
+      if (grandLakeDistance(lake, wx, wz) < edge) return lake.level;
+      continue;
+    }
     if (Math.abs(wx - lake.x) > lake.rx * 1.3 + 1 || Math.abs(wz - lake.z) > lake.rz * 1.3 + 1) continue;
     const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.10;
     if (lakeTouches(lake, wx, wz, edge)) return lake.level;
@@ -836,7 +922,7 @@ export function worldWaterCellAt(ctx, wx, wz) {
 // ── neighbor region generation ─────────────────────────────────────────────
 const PAD = 22;            // slope-clamp padding (>= CLAMP_ITERS keeps seams exact)
 const CLAMP_ITERS = 20;
-const SLOPE_CAP = 7.0;     // ft per vertex step (allows dramatic 60 deg mountain faces and grand elevation)
+const SLOPE_CAP = 6.75;    // ft per vertex step (allows dramatic mountain faces while keeping quantized steps <= 7.0 ft)
 const LAKE_SALT = 7001;
 
 const NEIGHBOR_CLUSTER_VARIANTS = {
@@ -851,6 +937,9 @@ const NEIGHBOR_CLUSTER_VARIANTS = {
   mountains: ['boulder', 'boulder', 'rock', 'tree', 'scree'],
   ruins: ['rubble', 'rubble', 'rock', 'ruin_pillar'],
   graveyard: ['grave_marker', 'dead_brush', 'rock'],
+  swamp: ['tree', 'dead_brush', 'fern', 'rock', 'boulder'],
+  volcanic: ['boulder', 'boulder', 'rock', 'scree', 'dead_brush'],
+  coastal: ['grass', 'rock', 'boulder', 'twig', 'wildflower'],
 };
 
 // The guaranteed graveyard sits in exactly one ring-1 region (high chance of
@@ -862,7 +951,7 @@ export function graveyardSiteRegion(seed = WORLD_SEED) {
 }
 
 function isPondBiome(biome) {
-  return biome === 'meadow' || biome === 'forest' || biome === 'snow_forest';
+  return biome === 'meadow' || biome === 'forest' || biome === 'snow_forest' || biome === 'swamp';
 }
 
 function generateNeighborRegion(rx, rz, ctx) {
@@ -881,14 +970,29 @@ function generateNeighborRegion(rx, rz, ctx) {
   }
 
   // ── 2. biome cells: classify the macro field per world cell ─────────────
+  const grandLakes = ctx.grandLakes || (ctx.lakes || []).filter((l) => l.grand);
   const kinds = [...BIOME_ORDER];
   const cells = new Array(REGION_W * REGION_H);
   for (let z = 0; z < REGION_H; z++) {
     for (let x = 0; x < REGION_W; x++) {
-      cells[z * REGION_W + x] = BIOME_INDEX[classifyBiome(originX + x + 0.5, originZ + z + 0.5, seed)];
+      cells[z * REGION_W + x] = BIOME_INDEX[classifyBiome(originX + x + 0.5, originZ + z + 0.5, seed, grandLakes)];
     }
   }
-  const dominant = classifyBiome(originX + REGION_W / 2, originZ + REGION_H / 2, seed);
+  // Island biomes within grand lakes override the water bed
+  for (const lake of grandLakes) {
+    for (const isl of (lake.islands || [])) {
+      for (let z = 0; z < REGION_H; z++) {
+        for (let x = 0; x < REGION_W; x++) {
+          const wx = originX + x + 0.5, wz = originZ + z + 0.5;
+          const dx = (wx - isl.x) / isl.rx, dz = (wz - isl.z) / isl.rz;
+          if (dx * dx + dz * dz <= 1.0) {
+            cells[z * REGION_W + x] = BIOME_INDEX[isl.biome || 'ruins'];
+          }
+        }
+      }
+    }
+  }
+  const dominant = classifyBiome(originX + REGION_W / 2, originZ + REGION_H / 2, seed, grandLakes);
   const tally = {};
   for (const c of cells) tally[kinds[c]] = (tally[kinds[c]] || 0) + 1;
   const majorityBiome = Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
@@ -934,15 +1038,20 @@ function generateNeighborRegion(rx, rz, ctx) {
 
   // ── 3. carve water beds into the raw field (pre-clamp) ───────────────────
   const carveBody = (body, maxDepth) => {
-    const minX = Math.max(0, Math.floor(body.x - body.rx * 1.6 - 2) - originX + PAD);
-    const maxX = Math.min(PW - 1, Math.ceil(body.x + body.rx * 1.6 + 2) - originX + PAD);
-    const minZ = Math.max(0, Math.floor(body.z - body.rz * 1.6 - 2) - originZ + PAD);
-    const maxZ = Math.min(PH - 1, Math.ceil(body.z + body.rz * 1.6 + 2) - originZ + PAD);
+    const rxBound = body.grand ? body.rx * 1.35 : body.rx * 1.6;
+    const rzBound = body.grand ? body.rz * 1.35 : body.rz * 1.6;
+    const minX = Math.max(0, Math.floor(body.x - rxBound - 2) - originX + PAD);
+    const maxX = Math.min(PW - 1, Math.ceil(body.x + rxBound + 2) - originX + PAD);
+    const minZ = Math.max(0, Math.floor(body.z - rzBound - 2) - originZ + PAD);
+    const maxZ = Math.min(PH - 1, Math.ceil(body.z + rzBound + 2) - originZ + PAD);
     for (let pz = minZ; pz <= maxZ; pz++) {
       const wz = originZ + pz - PAD;
       for (let px = minX; px <= maxX; px++) {
         const wx = originX + px - PAD;
-        const d = Math.hypot((wx - body.x) / body.rx, (wz - body.z) / body.rz);
+        if (body.grand && isGrandLakeIsland(body, wx, wz)) continue;
+        const d = body.grand
+          ? grandLakeDistance(body, wx, wz)
+          : Math.hypot((wx - body.x) / body.rx, (wz - body.z) / body.rz);
         if (d > 1.5) continue;
         const at = pz * PW + px;
         const bed = body.level - maxDepth + Math.pow(Math.min(1, d), 2) * (maxDepth - 0.4);
@@ -954,9 +1063,10 @@ function generateNeighborRegion(rx, rz, ctx) {
     }
   };
   for (const lake of ctx.lakes) {
-    if (lake.x + lake.rx * 1.7 < originX - PAD || lake.x - lake.rx * 1.7 > originX + REGION_W + PAD) continue;
-    if (lake.z + lake.rz * 1.7 < originZ - PAD || lake.z - lake.rz * 1.7 > originZ + REGION_H + PAD) continue;
-    carveBody(lake, 3.2);
+    const stretch = lake.grand ? 1.4 : 1.7;
+    if (lake.x + lake.rx * stretch < originX - PAD || lake.x - lake.rx * stretch > originX + REGION_W + PAD) continue;
+    if (lake.z + lake.rz * stretch < originZ - PAD || lake.z - lake.rz * stretch > originZ + REGION_H + PAD) continue;
+    carveBody(lake, lake.grand ? 5.5 : 3.2);
   }
   for (const pond of ponds) carveBody(pond, 1.5);
   // river beds (same kernel as home so seams with the home region match)
@@ -1007,15 +1117,17 @@ function generateNeighborRegion(rx, rz, ctx) {
     }
   };
   for (const lake of ctx.lakes) {
-    const minX = Math.max(0, Math.floor(lake.x - lake.rx * 1.3 - 1) - originX);
-    const maxX = Math.min(REGION_W - 1, Math.ceil(lake.x + lake.rx * 1.3 + 1) - originX);
-    const minZ = Math.max(0, Math.floor(lake.z - lake.rz * 1.3 - 1) - originZ);
-    const maxZ = Math.min(REGION_H - 1, Math.ceil(lake.z + lake.rz * 1.3 + 1) - originZ);
+    const stretch = lake.grand ? 1.35 : 1.3;
+    const minX = Math.max(0, Math.floor(lake.x - lake.rx * stretch - 1) - originX);
+    const maxX = Math.min(REGION_W - 1, Math.ceil(lake.x + lake.rx * stretch + 1) - originX);
+    const minZ = Math.max(0, Math.floor(lake.z - lake.rz * stretch - 1) - originZ);
+    const maxZ = Math.min(REGION_H - 1, Math.ceil(lake.z + lake.rz * stretch + 1) - originZ);
     if (maxX < 0 || maxZ < 0 || minX > REGION_W - 1 || minZ > REGION_H - 1) continue;
     for (let z = minZ; z <= maxZ; z++) {
       for (let x = minX; x <= maxX; x++) {
         const wx = originX + x, wz = originZ + z;
-        const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.10;
+        if (lake.grand && isGrandLakeIsland(lake, wx, wz)) continue;
+        const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * (lake.grand ? 0.08 : 0.10);
         if (!lakeTouches(lake, wx, wz, edge)) continue;
         setWater(x, z, lake.level);
       }
@@ -1467,11 +1579,9 @@ function generateNeighborRegion(rx, rz, ctx) {
       // autumn roll and the oak/pine pick, so deterministic region layouts
       // do not shift — only the variant labels change.
       let treeVariant;
-      if (biomeName === 'deadlands') treeVariant = 'dead';
-      // snow country mixes living snowpine with dead stands (user ruling):
-      // one extra regionRng() draw per tree in these biomes — deliberate
-      // distribution change, so downstream draws shift only inside snowy
-      // regions' cluster fills.
+      if (biomeName === 'deadlands' || biomeName === 'volcanic') treeVariant = 'dead';
+      else if (biomeName === 'swamp') treeVariant = regionRng() < 0.4 ? 'dead' : (regionRng() < 0.7 ? 'ash' : 'oak');
+      else if (biomeName === 'coastal') treeVariant = regionRng() < 0.65 ? 'pine' : 'dead';
       else if (biomeName === 'snow_forest') treeVariant = regionRng() < 0.72 ? 'snowpine' : 'dead';
       else if (biomeName === 'snowfield') treeVariant = regionRng() < 0.6 ? 'snowpine' : 'dead';
       else if (biomeName === 'mountains') treeVariant = regionRng() < 0.25 ? 'birch' : 'pine';
@@ -1565,6 +1675,114 @@ function generateNeighborRegion(rx, rz, ctx) {
       }
       clusters.push({ id: `stones-${rx}_${rz}`, rule: 'standing-stones', biome: dominant, x: site.x, z: site.z, radius: 5 });
       pointsOfInterest.push({ id: `stones-${rx}_${rz}`, kind: 'ruins', label: 'Standing Stones', x: site.x, z: site.z });
+    }
+  }
+
+  // ── 9d. Rich procedural POI expansion ────────────────────────────────────
+  // Distinctive landmarks with realistic world-placement gating:
+  // Mountain Pass, Abandoned Mine, Steaming Springs, Hermit's Sanctuary,
+  // Megalith Henge, Wrecked Caravan, Ancient Barrow Mound, Sunken Shrine.
+  const poiRng = mulberry32((hash2(rx * 31 + 7, rz * 29 + 13, seed ^ 0x901e) * 0x7fffffff) | 0);
+  const poiRoll = hash2(rx * 23 + 1, rz * 41 + 5, seed ^ 0x81fa);
+  if (!graveyardHere && !townBuilt && pointsOfInterest.length < 2 && poiRoll < 0.42) {
+    if (dominant === 'mountains' && poiRoll < 0.22) {
+      // 1. Mountain Pass: high notch with ruined watchtower & fortified gate
+      const site = findSite(poiRng, 8);
+      if (site) {
+        addProp('ruin_wall', site.x - 3.5, site.z, { scale: 1.2, rotY: 0, clusterId: 'mountain-pass' });
+        addProp('ruin_wall', site.x + 3.5, site.z, { scale: 1.2, rotY: 0, clusterId: 'mountain-pass' });
+        addProp('ruin_pillar', site.x, site.z - 3.8, { scale: 1.5, clusterId: 'mountain-pass' });
+        addProp('street_lantern', site.x, site.z + 2, { clusterId: 'mountain-pass' });
+        for (let k = 0; k < 5; k++) {
+          addProp('rubble', site.x + (poiRng() - 0.5) * 6, site.z + (poiRng() - 0.5) * 6, { scale: 0.8 + poiRng() * 0.6, clusterId: 'mountain-pass' });
+        }
+        clusters.push({ id: 'mountain-pass', rule: 'mountain-pass', biome: 'mountains', x: site.x, z: site.z, radius: 8 });
+        pointsOfInterest.push({ id: `pass-${rx}_${rz}`, kind: 'pass', label: 'High Mountain Pass', x: site.x, z: site.z });
+      }
+    } else if ((dominant === 'mountains' || dominant === 'volcanic') && poiRoll < 0.38) {
+      // 2. Abandoned Mine: timbered portal into the hillside with ore rubble
+      const site = findSite(poiRng, 7);
+      if (site) {
+        addProp('cave_entrance', site.x, site.z, { scale: 1.3, rotY: poiRng() * Math.PI * 2, clusterId: 'mine-site' });
+        addProp('ruin_pillar', site.x + 3.2, site.z + 1, { scale: 1.1, clusterId: 'mine-site' });
+        addProp('street_lantern', site.x - 2.8, site.z + 1.2, { clusterId: 'mine-site' });
+        for (let k = 0; k < 6; k++) {
+          addProp('rubble', site.x + (poiRng() - 0.5) * 7, site.z + (poiRng() - 0.5) * 7, { scale: 0.9 + poiRng() * 0.7, clusterId: 'mine-site' });
+        }
+        clusters.push({ id: 'mine-site', rule: 'abandoned-mine', biome: dominant, x: site.x, z: site.z, radius: 8 });
+        pointsOfInterest.push({ id: `mine-${rx}_${rz}`, kind: 'mine', label: 'Abandoned Mine', x: site.x, z: site.z });
+      }
+    } else if (dominant === 'volcanic' || (dominant === 'snowfield' && poiRoll < 0.28)) {
+      // 3. Hot Springs: mineral spires, basalt columns, round steam rocks
+      const site = findSite(poiRng, 6);
+      if (site) {
+        for (let k = 0; k < 6; k++) {
+          const ang = (k / 6) * Math.PI * 2;
+          addProp('standing_stone', site.x + Math.cos(ang) * 4.2, site.z + Math.sin(ang) * 4.2, { scale: 1.1, clusterId: 'hot-spring' });
+        }
+        for (let k = 0; k < 4; k++) {
+          addProp('boulder', site.x + (poiRng() - 0.5) * 5, site.z + (poiRng() - 0.5) * 5, { scale: 1.2, shape: 'round', clusterId: 'hot-spring' });
+        }
+        clusters.push({ id: 'hot-spring', rule: 'hot-springs', biome: dominant, x: site.x, z: site.z, radius: 7 });
+        pointsOfInterest.push({ id: `spring-${rx}_${rz}`, kind: 'spring', label: 'Steaming Springs', x: site.x, z: site.z });
+      }
+    } else if ((dominant === 'forest' || dominant === 'swamp' || dominant === 'meadow') && poiRoll < 0.22) {
+      // 4. Hermit's Hut: isolated dwelling, garden fence, well
+      const site = findSite(poiRng, 9);
+      if (site && !nearRoad(site.x, site.z, 16)) {
+        addProp('building', site.x, site.z, { width: 3, depth: 3, rotY: poiRng() * Math.PI * 2, clusterId: 'hermit-hut' });
+        addProp('well', site.x + 3.2, site.z + 2.2, { clusterId: 'hermit-hut' });
+        addProp('grave_fence', site.x - 3.8, site.z, { rotY: 0, clusterId: 'hermit-hut' });
+        addProp('dead_brush', site.x + 2, site.z - 2.8, { scale: 1.1, clusterId: 'hermit-hut' });
+        clusters.push({ id: 'hermit-hut', rule: 'hermit-hut', biome: dominant, x: site.x, z: site.z, radius: 9 });
+        pointsOfInterest.push({ id: `hermit-${rx}_${rz}`, kind: 'dwelling', label: "Hermit's Sanctuary", x: site.x, z: site.z });
+      }
+    } else if (dominant === 'deadlands' || (dominant === 'meadow' && poiRoll > 0.32)) {
+      // 5. Ancient Barrow Mound: great earth tumulus with standing monoliths
+      const site = findSite(poiRng, 8);
+      if (site) {
+        addProp('grave_mound', site.x, site.z, { scale: 2.2, clusterId: 'ancient-barrow' });
+        for (let k = 0; k < 6; k++) {
+          const ang = (k / 6) * Math.PI * 2;
+          addProp('standing_stone', site.x + Math.cos(ang) * 5.2, site.z + Math.sin(ang) * 5.2, { scale: 1.25, clusterId: 'ancient-barrow' });
+        }
+        clusters.push({ id: 'ancient-barrow', rule: 'ancient-barrow', biome: dominant, x: site.x, z: site.z, radius: 8 });
+        pointsOfInterest.push({ id: `barrow-${rx}_${rz}`, kind: 'barrow', label: 'Ancient Barrow Mound', x: site.x, z: site.z });
+      }
+    } else if (nearRoad(REGION_W / 2, REGION_H / 2, 28) && poiRoll < 0.35) {
+      // 6. Wrecked Caravan: roadside debris, broken axles, shattered crates
+      const roadSpot = nearRoad(REGION_W / 2 + (poiRng() - 0.5) * 32, REGION_H / 2 + (poiRng() - 0.5) * 32, 10);
+      if (roadSpot && isLand(roadSpot.x + 2, roadSpot.z + 2)) {
+        const sx = roadSpot.x + 2, sz = roadSpot.z + 2;
+        addProp('ruin_column_fallen', sx, sz, { scale: 1.2, rotY: poiRng() * Math.PI, clusterId: 'wrecked-caravan' });
+        addProp('rubble', sx + 2.2, sz - 1.5, { scale: 0.9, clusterId: 'wrecked-caravan' });
+        addProp('rubble', sx - 1.8, sz + 2.1, { scale: 0.8, clusterId: 'wrecked-caravan' });
+        addProp('dead_brush', sx + 1.5, sz + 1.8, { scale: 0.8, clusterId: 'wrecked-caravan' });
+        clusters.push({ id: 'wrecked-caravan', rule: 'wrecked-caravan', biome: dominant, x: sx, z: sz, radius: 6 });
+        pointsOfInterest.push({ id: `caravan-${rx}_${rz}`, kind: 'ruins', label: 'Wrecked Caravan', x: sx, z: sz });
+      }
+    } else if (dominant === 'swamp' || dominant === 'coastal') {
+      // 7. Sunken Shrine: half-submerged megalith slab with mossy columns
+      const site = findSite(poiRng, 7);
+      if (site) {
+        addProp('ruin_slab', site.x, site.z, { scale: 1.2, rotY: poiRng() * Math.PI * 2, clusterId: 'sunken-shrine' });
+        addProp('ruin_column', site.x - 3, site.z + 1.5, { scale: 1.1, clusterId: 'sunken-shrine' });
+        addProp('ruin_column_fallen', site.x + 2.5, site.z - 2, { scale: 1.0, clusterId: 'sunken-shrine' });
+        clusters.push({ id: 'sunken-shrine', rule: 'sunken-shrine', biome: dominant, x: site.x, z: site.z, radius: 7 });
+        pointsOfInterest.push({ id: `shrine-${rx}_${rz}`, kind: 'ruins', label: 'Sunken Shrine', x: site.x, z: site.z });
+      }
+    } else {
+      // 8. Ancient Megalith Ring: concentric stone circle
+      const site = findSite(poiRng, 7);
+      if (site) {
+        for (let k = 0; k < 8; k++) {
+          const ang = (k / 8) * Math.PI * 2;
+          addProp('standing_stone', site.x + Math.cos(ang) * 5.6, site.z + Math.sin(ang) * 5.6, { scale: 1.15, clusterId: 'megalith-ring' });
+        }
+        addProp('ruin_slab', site.x, site.z, { scale: 1.1, clusterId: 'megalith-ring' });
+        clusters.push({ id: 'megalith-ring', rule: 'megalith-ring', biome: dominant, x: site.x, z: site.z, radius: 8 });
+        pointsOfInterest.push({ id: `megalith-${rx}_${rz}`, kind: 'ruins', label: 'Ancient Megalith Circle', x: site.x, z: site.z });
+      }
     }
   }
 
@@ -1673,7 +1891,12 @@ function generateNeighborRegion(rx, rz, ctx) {
     metadata: {
       townCenter: townBuilt ? { x: townSite.x, z: townSite.z } : { x: -999, z: -999 },
       town: townRecord,
-      water: { lakes: [], ponds, river: [] },
+      water: {
+        lakes: [],
+        ponds,
+        river: [],
+        grandLakes: grandLakes.filter((gl) => Math.hypot(gl.x - (originX + REGION_W / 2), gl.z - (originZ + REGION_H / 2)) < gl.rx * 1.5).map((gl) => ({ id: gl.id, name: gl.name })),
+      },
       roads: [],
     },
   };

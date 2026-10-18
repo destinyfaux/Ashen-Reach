@@ -116,6 +116,7 @@ test('neighbor regions carry grounded water, walkable roads, spawns and prop var
     const def = generateRegion(rx, rz, { ctx });
     const w = def.size.w;
     const walkable = walkableFn(def);
+    const waterSet = new Set((def.cells.water || []).map(([wx, wz]) => wz * w + wx));
     for (const [x, z] of def.cells.road || []) {
       assert.ok(walkable(x, z), `region ${rx},${rz} road cell ${x},${z} must be on land`);
     }
@@ -138,7 +139,7 @@ test('neighbor regions carry grounded water, walkable roads, spawns and prop var
       const shoreline = [[-1, 0], [1, 0], [0, -1], [0, 1]].some(([dx, dz]) => {
         const nx = x + dx, nz = z + dz;
         if (nx >= 0 && nx < w && nz >= 0 && nz < def.size.h) {
-          return !(def.cells.water || []).some(([wx2, wz2]) => wx2 === nx && wz2 === nz);
+          return !waterSet.has(nz * w + nx);
         }
         return worldWaterCellAt(ctx, rx * w + nx, rz * def.size.h + nz) === null;
       });
@@ -422,4 +423,68 @@ test('meadow and forest country grows temple and fortress ruins', () => {
   }
   assert.ok(temples + keeps >= 4, `expected several ruin sites in the band, got ${temples + keeps}`);
   assert.ok(structured >= temples + keeps, 'ruin sites carry structural props');
+});
+
+test('grand lakes generate as multi-region freshwater seas with shore sectors and islands', () => {
+  const home = generateOverworld({ seed: WORLD_SEED });
+  const ctx = getWorldContext({ seed: WORLD_SEED, homeDef: home });
+  assert.ok(ctx.grandLakes && ctx.grandLakes.length >= 1, 'world should generate grand lakes');
+  for (const lake of ctx.grandLakes) {
+    assert.ok(lake.rx >= 120 && lake.rz >= 90, `grand lake scale should span multi-region (${lake.rx}x${lake.rz})`);
+    assert.ok(lake.level >= 2.0, 'grand lake surface sits above floor level');
+    assert.ok(typeof lake.name === 'string' && lake.name.length > 0, 'grand lake is named');
+    assert.ok(Array.isArray(lake.sectors) && lake.sectors.length >= 4, 'grand lake has asymmetric shore sectors');
+    assert.ok(Array.isArray(lake.islands) && lake.islands.length >= 1, 'grand lake carries scenic islands');
+    assert.ok(typeof ctx.shoreTypeAt(lake.x, lake.z + lake.rz) === 'string', 'shoreTypeAt returns shore type');
+    assert.equal(ctx.lakeDepthTierAt(lake.x, lake.z), 'deep', 'center of grand lake is deep tier');
+  }
+});
+
+test('new biomes (swamp, volcanic, coastal) are represented in the wider world', () => {
+  const home = generateOverworld({ seed: WORLD_SEED });
+  const ctx = getWorldContext({ seed: WORLD_SEED, homeDef: home });
+  const foundBiomes = new Set();
+  for (let rz = -6; rz <= 6; rz++) {
+    for (let rx = -6; rx <= 6; rx++) {
+      const def = generateRegion(rx, rz, { ctx });
+      for (const b of def.biomes.cells) {
+        foundBiomes.add(def.biomes.kinds[b]);
+      }
+      if (foundBiomes.has('swamp') && foundBiomes.has('volcanic') && foundBiomes.has('coastal')) break;
+    }
+    if (foundBiomes.has('swamp') && foundBiomes.has('volcanic') && foundBiomes.has('coastal')) break;
+  }
+  assert.ok(foundBiomes.has('swamp'), 'swamp biome should appear in the wider world');
+  assert.ok(foundBiomes.has('volcanic'), 'volcanic biome should appear in the wider world');
+  assert.ok(foundBiomes.has('coastal'), 'coastal biome should appear in the wider world');
+});
+
+test('procedural POI expansion generates diverse landmarks across the regions', () => {
+  const home = generateOverworld({ seed: WORLD_SEED });
+  const ctx = getWorldContext({ seed: WORLD_SEED, homeDef: home });
+  const poiLabels = new Set();
+  const expectedAny = [
+    'High Mountain Pass', 'Abandoned Mine', 'Steaming Springs',
+    "Hermit's Sanctuary", 'Ancient Barrow Mound', 'Wrecked Caravan',
+    'Sunken Shrine', 'Ancient Megalith Circle',
+  ];
+  for (let rz = -5; rz <= 5; rz++) {
+    for (let rx = -5; rx <= 5; rx++) {
+      const def = generateRegion(rx, rz, { ctx });
+      for (const poi of def.pointsOfInterest || []) {
+        poiLabels.add(poi.label);
+      }
+      let count = 0;
+      for (const exp of expectedAny) if (poiLabels.has(exp)) count++;
+      if (count >= 4) break;
+    }
+    let count = 0;
+    for (const exp of expectedAny) if (poiLabels.has(exp)) count++;
+    if (count >= 4) break;
+  }
+  let matched = 0;
+  for (const exp of expectedAny) {
+    if (poiLabels.has(exp)) matched++;
+  }
+  assert.ok(matched >= 3, `expected multiple new POI archetypes to spawn across the world, found ${matched}`);
 });

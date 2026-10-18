@@ -827,6 +827,7 @@ export function mountHud(container: HTMLElement): () => void {
   const MM_COLORS: Record<string, string> = {
     meadow: '#445d31', forest: '#273e21', snow_forest: '#647e71', snowfield: '#a8b9c0',
     deadlands: '#3c3227', mountains: '#68655d', town: '#887046', graveyard: '#353630', ruins: '#4f4841',
+    swamp: '#2f3d28', volcanic: '#3b2a26', coastal: '#596b48',
   };
   const MM_WATER = '#1b384f', MM_ROAD = '#827150', MM_BG = '#07080a';
   const MM_VIEW = 72;              // cells shown either side of the party

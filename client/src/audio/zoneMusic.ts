@@ -200,9 +200,24 @@ export function resolveZoneMusic(q: ZoneMusicQuery): MusicScene {
       if (dist <= 12) return 'ruins';
     }
 
-    // Cave / Chasm / Dungeon mouth
-    if (kind === 'cave' || label.includes('cave') || label.includes('mouth')) {
+    // Cave / Chasm / Dungeon mouth / Mine / Pass
+    if (kind === 'cave' || kind === 'mine' || kind === 'pass' || label.includes('cave') || label.includes('mine') || label.includes('pass')) {
       if (dist <= 10) return 'dungeon';
+    }
+
+    // Barrow / Tomb / Grave
+    if (kind === 'barrow' || label.includes('barrow')) {
+      if (dist <= 14) return 'graveyard';
+    }
+
+    // Springs / Sacred pools
+    if (kind === 'spring' || label.includes('spring')) {
+      if (dist <= 10) return 'cathedral';
+    }
+
+    // Dwelling / Sanctuary
+    if (kind === 'dwelling' || label.includes('sanctuary') || label.includes('hut')) {
+      if (dist <= 10) return 'tavern';
     }
 
     // Library / Archive
@@ -243,6 +258,12 @@ export function resolveZoneMusic(q: ZoneMusicQuery): MusicScene {
     const biomeKind = curMap.biomes.kinds[biomeIdx];
     if (biomeKind) {
       switch (biomeKind) {
+        case 'swamp':
+          return 'crypt';
+        case 'volcanic':
+          return 'abyss';
+        case 'coastal':
+          return 'forest';
         case 'town':
           return 'town';
         case 'graveyard':

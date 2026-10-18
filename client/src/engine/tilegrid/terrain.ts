@@ -161,6 +161,8 @@ export function buildFloor(grid: TileGrid, map: MapDef, wallSet: Set<number>) {
     deadlands: [1.04, 0.91, 0.76], mountains: [1.12, 1.12, 1.1],
     town: [1.28, 1.16, 0.93], graveyard: [0.82, 0.96, 0.78],
     ruins: [0.88, 0.92, 0.8],
+    swamp: [0.72, 0.85, 0.62], volcanic: [0.65, 0.58, 0.54],
+    coastal: [1.15, 1.10, 0.90],
   };
   const terrainHeights = map.terrain?.heightFt || [];
   const terrainWidth = map.terrain?.width || 0;

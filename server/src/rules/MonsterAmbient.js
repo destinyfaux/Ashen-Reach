@@ -133,6 +133,7 @@ export function thinkAmbient(monster, ctx) {
     const dest = stepToward(tx, tz);
     if (!dest) return false;
     if (ctx.blocked && ctx.blocked(dest.x, dest.z)) return false;
+    if (ctx.isBanned && ctx.isBanned(dest.x, dest.z)) return false;
     const rotY = face(dest.x - x, dest.z - z);
     out.move = { x: dest.x, z: dest.z, ...(rotY !== undefined ? { rotY } : {}) };
     return true;
@@ -181,6 +182,7 @@ export function thinkAmbient(monster, ctx) {
           const tx = mem.homeX + Math.cos(a) * r;
           const tz = mem.homeZ + Math.sin(a) * r;
           if (ctx.blocked && ctx.blocked(tx, tz)) continue;
+          if (ctx.isBanned && ctx.isBanned(tx, tz)) continue;
           if (ctx.path && !ctx.path(x, z, tx, tz)) continue;   // unreachable pocket
           mem.mode = 'wander';
           mem.targetX = tx; mem.targetZ = tz;

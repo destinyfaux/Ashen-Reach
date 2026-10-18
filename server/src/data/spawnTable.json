@@ -1,0 +1,169 @@
+{
+  "meadow": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "wolf", "weight": 35 },
+      { "id": "goblin", "weight": 30 },
+      { "id": "bandit", "weight": 25 },
+      { "id": "boar", "weight": 10 }
+    ],
+    "never": ["yeti", "frost_giant", "salamander", "magma_mephit", "mummy", "water_elemental"],
+    "propBias": ["wildflower", "grass", "rock", "tree"]
+  },
+  "forest": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "wolf", "weight": 30 },
+      { "id": "dire_wolf", "weight": 20 },
+      { "id": "brown_bear", "weight": 20 },
+      { "id": "goblin", "weight": 20 },
+      { "id": "bandit", "weight": 10 }
+    ],
+    "never": ["yeti", "frost_giant", "salamander", "magma_mephit", "giant_crab"],
+    "propBias": ["tree", "fern", "boulder", "twig", "rock"]
+  },
+  "snow_forest": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "winter_wolf", "weight": 40 },
+      { "id": "wolf", "weight": 30 },
+      { "id": "ice_mephit", "weight": 20 },
+      { "id": "polar_bear", "weight": 10 }
+    ],
+    "never": ["fire_elemental", "salamander", "magma_mephit", "lizardfolk", "giant_frog", "giant_crab"],
+    "propBias": ["tree", "snow_drift", "boulder", "rock"]
+  },
+  "snowfield": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "ice_mephit", "weight": 35 },
+      { "id": "winter_wolf", "weight": 35 },
+      { "id": "yeti", "weight": 15 },
+      { "id": "frost_giant", "weight": 15 }
+    ],
+    "never": ["fire_elemental", "salamander", "magma_mephit", "lizardfolk", "giant_frog", "giant_crab", "camel"],
+    "propBias": ["snow_drift", "rock", "boulder", "tree"]
+  },
+  "deadlands": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "skeleton", "weight": 35 },
+      { "id": "zombie", "weight": 30 },
+      { "id": "ghoul", "weight": 20 },
+      { "id": "wight", "weight": 10 },
+      { "id": "specter", "weight": 5 }
+    ],
+    "never": ["deer", "boar", "giant_crab", "polar_bear"],
+    "propBias": ["dead_brush", "rock", "boulder", "tree"]
+  },
+  "mountains": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "ogre", "weight": 30 },
+      { "id": "harpy", "weight": 30 },
+      { "id": "manticore", "weight": 20 },
+      { "id": "gargoyle", "weight": 20 }
+    ],
+    "never": ["giant_crab", "merfolk", "crocodile", "giant_frog", "lizardfolk"],
+    "propBias": ["boulder", "rock", "scree", "tree"]
+  },
+  "swamp": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "giant_frog", "weight": 35 },
+      { "id": "lizardfolk", "weight": 30 },
+      { "id": "will_o_wisp", "weight": 20 },
+      { "id": "poisonous_snake", "weight": 15 }
+    ],
+    "never": ["fire_elemental", "yeti", "frost_giant", "polar_bear", "salamander", "magma_mephit", "manticore", "camel"],
+    "propBias": ["dead_brush", "tree", "rock", "boulder", "fern"]
+  },
+  "volcanic": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "magma_mephit", "weight": 40 },
+      { "id": "fire_elemental", "weight": 30 },
+      { "id": "salamander", "weight": 20 },
+      { "id": "gargoyle", "weight": 10 }
+    ],
+    "never": ["yeti", "frost_giant", "polar_bear", "winter_wolf", "giant_frog", "giant_crab", "merfolk", "lizardfolk", "brown_bear"],
+    "propBias": ["boulder", "rock", "scree", "dead_brush"]
+  },
+  "coastal": {
+    "weight": 0.8,
+    "monsters": [
+      { "id": "giant_crab", "weight": 40 },
+      { "id": "merfolk", "weight": 30 },
+      { "id": "bandit", "weight": 20 },
+      { "id": "water_elemental", "weight": 10 }
+    ],
+    "never": ["yeti", "magma_mephit", "salamander", "fire_elemental", "manticore", "ogre"],
+    "propBias": ["grass", "rock", "boulder", "twig"]
+  },
+  "grand_lake_deep": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "water_elemental", "weight": 50 },
+      { "id": "merfolk", "weight": 30 },
+      { "id": "will_o_wisp", "weight": 20 }
+    ],
+    "never": ["wolf", "dire_wolf", "brown_bear", "ogre", "yeti", "fire_elemental"],
+    "propBias": []
+  },
+  "grand_lake_shelf": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "giant_crab", "weight": 40 },
+      { "id": "giant_frog", "weight": 30 },
+      { "id": "merfolk", "weight": 20 },
+      { "id": "poisonous_snake", "weight": 10 }
+    ],
+    "never": ["wolf", "bear", "yeti", "fire_elemental", "salamander"],
+    "propBias": []
+  },
+  "shore_rocky": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "harpy", "weight": 40 },
+      { "id": "gargoyle", "weight": 30 },
+      { "id": "bandit", "weight": 30 }
+    ],
+    "never": ["polar_bear", "salamander", "giant_frog"]
+  },
+  "shore_sandy": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "giant_crab", "weight": 50 },
+      { "id": "merfolk", "weight": 30 },
+      { "id": "bandit", "weight": 20 }
+    ],
+    "never": ["yeti", "salamander", "fire_elemental", "ogre"]
+  },
+  "shore_marshy": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "giant_frog", "weight": 40 },
+      { "id": "will_o_wisp", "weight": 30 },
+      { "id": "lizardfolk", "weight": 30 }
+    ],
+    "never": ["yeti", "polar_bear", "salamander", "fire_elemental"]
+  },
+  "shore_forested": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "wolf", "weight": 40 },
+      { "id": "brown_bear", "weight": 30 },
+      { "id": "boar", "weight": 30 }
+    ],
+    "never": ["yeti", "salamander", "fire_elemental", "giant_crab"]
+  },
+  "shore_volcanic": {
+    "weight": 1.0,
+    "monsters": [
+      { "id": "magma_mephit", "weight": 50 },
+      { "id": "fire_elemental", "weight": 30 },
+      { "id": "salamander", "weight": 20 }
+    ],
+    "never": ["yeti", "polar_bear", "giant_frog", "giant_crab", "merfolk", "lizardfolk"]
+  }
+}
