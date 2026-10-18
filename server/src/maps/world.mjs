@@ -178,7 +178,8 @@ function seamMask(gx, gz) {
 
 // Continuous 0..1 weights sampled per world vertex (or cell center).
 function mountainWeight(gx, gz, seed) {
-  const massif = smoothstep(0.47, 0.60, fbm(gx, gz, 640, seed + 301, 3));
+  // ~35-cell transition (smoothstep 0.47..0.55) keeping mountain-branch gradients below 2*SLOPE_CAP
+  const massif = smoothstep(0.47, 0.55, fbm(gx, gz, 640, seed + 301, 3));
   return massif * (1 - homeHalo(gx, gz));
 }
 
@@ -229,7 +230,7 @@ function classifyBiome(gx, gz, seed) {
 // ── world terrain elevation (pure, seam-continuous) ────────────────────────
 // Biome-driven relief on top of the shared home base formula. Every kernel
 // below is a smooth world-space field; the Jacobi slope clamp in the region
-// builder is what enforces the <= 4.2 ft vertex-step budget for the union.
+// builder is what enforces the <= 5.0 ft vertex-step budget for the union.
 function worldElevation(gx, gz, seed) {
   const seam = seamMask(gx, gz);
   if (seam > 0.999) return baseElevation(gx, gz, seed);
@@ -242,25 +243,61 @@ function worldElevation(gx, gz, seed) {
   const local = (noise(gx, gz, 9, seed + 101) - 0.5) * 3; // shared with home
   let e = 5 + broad + local;
 
-  // rolling hills — meadows stay calm, forests undulate
-  const hills = (fbm(gx, gz, 58, seed + 71, 3) - 0.5) * 22;
-  e += hills * (0.22 + 0.78 * moist) * (1 - wM) * (1 - wB * 0.8) * (1 - halo * 0.45);
+  // Large-scale terrain class (scale 400 cells = 2000 ft) for varied lowland relief
+  const hilliness = smoothstep(0.38, 0.62, fbm(gx, gz, 400, seed + 501, 2));
 
-  // mountain massifs: a broad shoulder rising with the weight field, ridged
-  // crests on top, plateau terracing where the plateau mask is high
+  // Three lowland relief layers: broad, mid, local (plains, gentle meadows, rolling forest, rugged foothills)
+  const hillsBroad = (fbm(gx, gz, 120, seed + 71, 3) - 0.5) * 30 * hilliness;
+  const hillsMid   = (fbm(gx, gz,  45, seed + 73, 3) - 0.5) * 14 * (0.3 + 0.7 * hilliness);
+  const hillsLocal = (fbm(gx, gz,  16, seed + 79, 2) - 0.5) * 5;
+  const lowlandRelief = hillsBroad + hillsMid + hillsLocal;
+  e += lowlandRelief * (0.4 + 0.6 * moist) * (1 - wM) * (1 - wB * 0.8) * (1 - halo * 0.45);
+
+  // ESCARPMENTS — long linear cliffs via strongly anisotropic ridged field (scale 250 in x, 40 in z)
+  const escarpmentField = ridged(gx, gz * 6.25, 250, seed + 1101, 3);
+  const escarpMask = smoothstep(0.60, 0.85, escarpmentField) * hilliness * (1 - wM) * 0.5 * (1 - halo * 0.5);
+  if (escarpMask > 0.01) {
+    e += escarpMask * 20;
+  }
+
+  // MESAS — isolated elevated flats
+  const mesaNoise = fbm(gx, gz, 200, seed + 1201, 2);
+  const mesaCore = smoothstep(0.50, 0.65, mesaNoise) * smoothstep(0.80, 0.65, mesaNoise);
+  const mesaMask = mesaCore * hilliness * (1 - wM) * 0.5 * (1 - halo * 0.5);
+  if (mesaMask > 0.01) {
+    e += mesaMask * 25;
+  }
+
+  // mountain massifs: domain-warped multi-scale ridges, elevated shoulder base, plateaus
   if (wM > 0.001) {
-    const crest = ridged(gx, gz, 130, seed + 809, 3);
-    const shoulder = wM * (26 + 40 * wM);
-    const relief = crest * crest * 54 * wM;
-    let mh = 6 + broad * 0.6 + shoulder + relief;
-    const plateau = smoothstep(0.55, 0.75, fbm(gx, gz, 230, seed + 907, 2)) *
-      smoothstep(0.3, 0.55, wM);
-    if (plateau > 0.001) {
-      const step = 26;
-      const terr = Math.floor(mh / step) * step +
-        smoothstep(0.3, 0.7, (mh % step) / step) * step;
-      mh = lerp(mh, terr, plateau * 0.8);
+    // 1. Domain warp — breaks the axis-aligned look of raw ridged noise
+    const warpX = (fbm(gx, gz, 180, seed + 201, 2) - 0.5) * 40;
+    const warpZ = (fbm(gx, gz, 180, seed + 211, 2) - 0.5) * 40;
+    const wx = gx + warpX, wz = gz + warpZ;
+
+    // 2. Multi-scale ridges: major 400 ft scale + minor detail
+    const crestMajor = ridged(wx, wz, 80, seed + 809, 4);
+    const crestMinor = ridged(wx, wz, 30, seed + 819, 2);
+
+    // 3. Amplitude: crest^1.3 elevates average mountain body, grand shoulder
+    const shoulder = 66 + 40 * wM;
+    const relief   = Math.pow(crestMajor, 1.3) * 140
+                   + crestMinor * 35 * (1 - crestMajor * 0.5);
+
+    // 4. Mountains sit on a broad raised base
+    let mh = Math.max(e, 40) + shoulder + relief;
+
+    // 5. Plateaus — terracing with a controlled ramp
+    const plateauMask = smoothstep(0.62, 0.82, fbm(gx, gz, 200, seed + 907, 2))
+                      * smoothstep(0.55, 0.80, wM);
+    if (plateauMask > 0.001) {
+      const PLATEAU_H = 40;
+      const terraced = Math.floor(mh / PLATEAU_H) * PLATEAU_H
+                     + smoothstep(0.3, 0.7, (mh % PLATEAU_H) / PLATEAU_H) * PLATEAU_H;
+      mh = lerp(mh, terraced, plateauMask * 0.85);
     }
+
+    // 6. Clean entry into massif
     e = lerp(e, mh, wM);
   }
 
@@ -782,7 +819,7 @@ function riverNear(ctx, x, z) {
 export function worldWaterCellAt(ctx, wx, wz) {
   for (const lake of ctx.lakes) {
     if (Math.abs(wx - lake.x) > lake.rx * 1.3 + 1 || Math.abs(wz - lake.z) > lake.rz * 1.3 + 1) continue;
-    const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.22;
+    const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.10;
     if (lakeTouches(lake, wx, wz, edge)) return lake.level;
   }
   const list = ctx.riverSampleGrid.get(Math.floor(wx / 8) + ',' + Math.floor(wz / 8));
@@ -797,9 +834,9 @@ export function worldWaterCellAt(ctx, wx, wz) {
 }
 
 // ── neighbor region generation ─────────────────────────────────────────────
-const PAD = 14;            // slope-clamp padding (>= CLAMP_ITERS keeps seams exact)
-const CLAMP_ITERS = 12;
-const SLOPE_CAP = 4.2;     // ft per vertex step (matches the home relax budget)
+const PAD = 22;            // slope-clamp padding (>= CLAMP_ITERS keeps seams exact)
+const CLAMP_ITERS = 20;
+const SLOPE_CAP = 7.0;     // ft per vertex step (allows dramatic 60 deg mountain faces and grand elevation)
 const LAKE_SALT = 7001;
 
 const NEIGHBOR_CLUSTER_VARIANTS = {
@@ -978,7 +1015,7 @@ function generateNeighborRegion(rx, rz, ctx) {
     for (let z = minZ; z <= maxZ; z++) {
       for (let x = minX; x <= maxX; x++) {
         const wx = originX + x, wz = originZ + z;
-        const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.22;
+        const edge = 1 + (hash2(wx, wz, LAKE_SALT) - 0.5) * 0.10;
         if (!lakeTouches(lake, wx, wz, edge)) continue;
         setWater(x, z, lake.level);
       }

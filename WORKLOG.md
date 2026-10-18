@@ -1516,3 +1516,32 @@ Work Log:
   - `npm run lint` (`tsc --noEmit`): clean pass with 0 errors.
   - `compile_applet` (`tools/build.mjs`): succeeded.
   - `npm test`: clean pass.
+
+---
+Task ID: 20
+Agent: senior software engineer
+Task: Overworld Landscape & Mountain Realism Overhaul — grand mountain relief, multi-scale domain-warped ridgelines, terraced plateaus, lowland terrain classification (plains, meadows, rolling forest, foothills), linear escarpments, and elevated mesas.
+
+Work Log:
+- Solved the "rolling hills" lack of elevation grandness and repetitive landscapes in world generation:
+  1. Mountain Relief & Grand Heights (`server/src/maps/world.mjs`):
+     - Narrowed `mountainWeight` transition from 83 cells to 35 cells (`smoothstep(0.47, 0.55)`), creating crisp, dramatic mountain bases and eliminating gradual 80-cell ramps.
+     - Added domain warping (`fbm` at scale 180) to break axis-aligned ridgelines.
+     - Replaced single-scale crests with multi-scale ridged noise (`crestMajor` at scale 80 + `crestMinor` detail).
+     - Elevated mountain relief with $crest^{1.3} \times 140\text{ ft}$ plus a robust 66–106 ft massif shoulder base, producing grand peaks exceeding 250–300 ft.
+     - Added terraced plateaus (`PLATEAU_H = 40`) with clean stepped shelves and ramps.
+     - Resolved gradient double-weighting in the mountain massif entry to ensure smooth, natural physical slopes.
+  2. Lowland Diversity & New Terrain Features (`server/src/maps/world.mjs`):
+     - Added a large-scale terrain-class mask (`hilliness` at scale 400 cells = 2,000 ft) generating four distinct lowland terrain classes across the infinite world: flat plains, gentle meadows, rolling forests, and rugged foothills.
+     - Implemented linear escarpment cliffs using anisotropic ridged noise (scale 250 in x, 40 in z) with controlled 20 ft steps.
+     - Implemented elevated mesas (isolated flat-top plateaus with 25 ft elevation steps).
+  3. Slope Clamp & Seam Invariants:
+     - Set `SLOPE_CAP = 7.0` (allowing dramatic 60° mountain faces suitable for dark-fantasy landscape scale).
+     - Adjusted `PAD = 22` and `CLAMP_ITERS = 20` to guarantee window-invariant deterministic seam continuity.
+     - Reduced lake edge jitter to 0.10 to prevent single-cell holes along water bodies.
+     - Updated test tolerances in `server/src/maps/world.test.mjs` (seam/mountain steps <= 7.5 ft, mountain peaks > 200 ft, reverted `strictInterior` to `every()` with `checked >= 2`).
+- Verification:
+  - `npm test`: 210/210 tests pass across all rules, combat, monsters, nav, maps, and world tests.
+  - `npm run typecheck` (`tsc --noEmit`): clean pass with 0 errors.
+  - `compile_applet`: clean compilation pass.
+

@@ -248,18 +248,23 @@ html, body { margin: 0; overflow: hidden; background: var(--ink); color: var(--b
 .hud-side { position: fixed; top: 12px; right: 16px; display: flex; flex-direction: column;
   align-items: flex-end; gap: 10px; width: 264px; max-width: 264px;
   max-height: calc(100vh - 260px); }
-/* world minimap (P3.7) — first child of .hud-side: compass + region/cell readout */
-.hud-mm { display: flex; flex-direction: column; align-items: stretch; width: 220px;
+/* world minimap (P3.7) — first child of .hud-side: surveyor compass + coordinates */
+.hud-mm { display: flex; flex-direction: column; align-items: stretch; width: 224px;
   background: var(--panel-2); border: 1px solid var(--line); border-right: 2px solid var(--gold);
-  padding: 7px 8px 8px; gap: 5px; pointer-events: none; }
+  padding: 8px 9px 9px; gap: 6px; pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.55), inset 0 1px rgba(255,255,255,0.035); }
 .hud-mm[hidden] { display: none; }
-.hud-mm-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.hud-mm-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.hud-mm-tag { display: inline-flex; align-items: center; gap: 5px; font-family: 'Cinzel', serif;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.16em; color: var(--gold-hi); text-transform: uppercase; }
+.hud-mm-tag .ic { width: 12px; height: 12px; color: var(--gold); }
 .hud-mm-name { font-family: 'Cinzel', serif; font-size: 11.5px; letter-spacing: 0.08em;
   color: var(--bone); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hud-mm-coords { font-size: 10px; color: var(--bone-dim); font-variant-numeric: tabular-nums;
-  white-space: nowrap; }
-.hud-mm-canvas { display: block; width: 100%; height: auto; image-rendering: pixelated;
-  border: 1px solid #262024; background: #08090b; }
+.hud-mm-coords { font-family: 'Cinzel', serif; font-size: 9.5px; color: var(--bone-dim); font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em; white-space: nowrap; }
+.hud-mm-frame { position: relative; border: 1px solid #363024; box-shadow: inset 0 0 10px #000, 0 2px 6px rgba(0,0,0,0.5);
+  background: #08090b; overflow: hidden; line-height: 0; }
+.hud-mm-canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
 .hud-loc { background: var(--panel-2); border: 1px solid var(--line); border-left: 2px solid var(--gold);
   padding: 8px 14px; min-width: 180px; }
 .hud-loc-name { font-family: 'Cinzel', serif; font-size: 15px; letter-spacing: 0.1em; color: var(--bone); display: block; }
@@ -476,7 +481,9 @@ body::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-in
 .hud-meta-bit .ic { width: 13px; height: 13px; color: #8d7f5c; }
 .hud-conn { display: inline-flex; align-items: center; gap: 6px; margin-top: 5px; }
 .hud-conn small { padding-left: 7px; border-left: 1px solid var(--line); color: #8a8378;
-  font: 400 10px 'Cinzel', serif; letter-spacing: .04em; }
+  font: 500 10px 'Cinzel', serif; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.hud-conn small[data-quality="good"] { color: #8fa876; }
+.hud-conn small[data-quality="fair"] { color: #d4a447; }
 .hud-conn small[data-quality="poor"] { color: #d9704f; }
 .hud-conn::before { content: ''; width: 6px; height: 6px; border-radius: 50%;
   background: currentColor; box-shadow: 0 0 7px currentColor; }

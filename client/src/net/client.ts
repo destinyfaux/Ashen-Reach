@@ -138,12 +138,25 @@ export function connect(url?: string): WebSocket {
   return ws;
 }
 
+function startPingTimer() {
+  if (pingTimer) clearInterval(pingTimer);
+  pingTimer = setInterval(() => {
+    if (ws && wsOpen && sessionStorage.getItem('ar_uid')) {
+      send('net:ping', { sentAt: Date.now() });
+    }
+  }, 2000);
+  if (ws && wsOpen && sessionStorage.getItem('ar_uid')) {
+    send('net:ping', { sentAt: Date.now() });
+  }
+}
+
 function onOpen() {
   wsOpen = true;
   attempt = 0;
   const g = useGame.getState();
   g.setConnection('online');
   if (g.phase === 'connecting') g.setPhase('join');
+  startPingTimer();
   // flush queued envelopes
   const hadQueuedJoin = joinQueued;
   joinQueued = false;
@@ -212,6 +225,7 @@ function dispatch(ev: string, data: any) {
         // first successful join (or reconnect reclaim) → playing
         sessionStorage.setItem('ar_uid', data.you.id);
         joinedOnce = true;
+        startPingTimer();
         g().setJoined(data.you, st.players || [], st.tokens || [], st.mapName || st.mapId || '');
         // A reconnect/bootstrap may arrive after combat ended while this client
         // was away; never retain an obsolete turn gate from the previous state.

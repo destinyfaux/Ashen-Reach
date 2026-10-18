@@ -32,7 +32,11 @@ export function mountHud(container: HTMLElement): () => void {
           <span class="hud-meta-bit" data-clock>${icon('moon', 'ic ic-sm')} <span class="clock-val"><b class="clock-time">--:--</b> <small class="clock-phase">· night</small></span></span>
           <span class="hud-meta-bit" data-weather>${icon('sparkle', 'ic ic-sm')} <span>clear</span></span>
         </span>
-         <span class="hud-conn" data-conn-badge data-conn="offline" title="Connection status"><span data-conn-label>offline</span><small data-ping>—</small></span>
+        <span class="hud-conn" data-conn-badge data-conn="offline" title="Connection & Performance">
+          <span data-conn-label>offline</span>
+          <small data-ping title="Network latency">—</small>
+          <small data-fps title="Frames per second">-- fps</small>
+        </span>
       </div>
        <section class="hud-party-wrap" data-party-wrap hidden>
          <div class="hud-party-label">COMPANIONS</div>
@@ -41,12 +45,14 @@ export function mountHud(container: HTMLElement): () => void {
     </div>
 
     <div class="hud-side">
-      <section class="hud-mm" data-mm hidden aria-label="World map">
+      <section class="hud-mm ornate" data-mm hidden aria-label="World map">
         <div class="hud-mm-head">
-          <span class="hud-mm-name" data-mm-name>—</span>
+          <span class="hud-mm-tag" data-mm-name>${icon('compass', 'ic ic-xs')} <span>SURVEY</span></span>
           <span class="hud-mm-coords" data-mm-coords></span>
         </div>
-        <canvas class="hud-mm-canvas" data-mm-canvas width="216" height="158"></canvas>
+        <div class="hud-mm-frame">
+          <canvas class="hud-mm-canvas" data-mm-canvas width="216" height="158"></canvas>
+        </div>
       </section>
       <div class="hud-things" data-things></div>
       <div class="hud-dm" data-dm hidden>
@@ -157,6 +163,7 @@ export function mountHud(container: HTMLElement): () => void {
   const connEl = $<HTMLElement>('[data-conn-badge]');
   const connLabelEl = $('[data-conn-label]');
   const pingEl = $('[data-ping]');
+  const fpsEl = $('[data-fps]');
   const partyEl = $('[data-party]');
   const partyWrapEl = $<HTMLElement>('[data-party-wrap]');
   const thingsEl = $('[data-things]');
@@ -796,18 +803,37 @@ export function mountHud(container: HTMLElement): () => void {
   } as typeof s0;
   render(s0);
 
-  // ── world minimap (P3.7): compass, region/cell readout, explored terrain ──
+  // ── FPS counter (real-time rolling frame sample) ──
+  let frameCount = 0;
+  let lastFpsTime = performance.now();
+  let currentFps = 60;
+  let fpsRaf = 0;
+  const measureFps = (now: number) => {
+    frameCount++;
+    const elapsed = now - lastFpsTime;
+    if (elapsed >= 400) {
+      currentFps = Math.round((frameCount * 1000) / elapsed);
+      frameCount = 0;
+      lastFpsTime = now;
+      fpsEl.textContent = `${currentFps} fps`;
+      fpsEl.dataset.quality = currentFps >= 50 ? 'good' : currentFps >= 30 ? 'fair' : 'poor';
+    }
+    fpsRaf = requestAnimationFrame(measureFps);
+  };
+  fpsRaf = requestAnimationFrame(measureFps);
+
+  // ── world minimap (P3.7): surveyor map, range grid, coordinates, exploration ──
   const mmCtx = mmCanvas.getContext('2d')!;
   const MM_COLORS: Record<string, string> = {
-    meadow: '#55743c', forest: '#3c5a35', snow_forest: '#93a89c', snowfield: '#c2ccd2',
-    deadlands: '#544434', mountains: '#7e7a6e', town: '#9c8656', graveyard: '#43443c', ruins: '#655f53',
+    meadow: '#445d31', forest: '#273e21', snow_forest: '#647e71', snowfield: '#a8b9c0',
+    deadlands: '#3c3227', mountains: '#68655d', town: '#887046', graveyard: '#353630', ruins: '#4f4841',
   };
-  const MM_WATER = '#27455e', MM_ROAD = '#8a7a58', MM_BG = '#08090b';
+  const MM_WATER = '#1b384f', MM_ROAD = '#827150', MM_BG = '#07080a';
   const MM_VIEW = 72;              // cells shown either side of the party
   let mmRaf = 0, mmLastDraw = 0, mmLastLabel = '';
   const drawMinimap = (t: number) => {
     mmRaf = requestAnimationFrame(drawMinimap);
-    if (t - mmLastDraw < 90) return;   // ~11 fps is plenty for a map
+    if (t - mmLastDraw < 80) return;   // ~12.5 fps is smooth and lightweight for the minimap
     mmLastDraw = t;
     const show = worldProbe.active && worldProbe.regions.length > 0;
     if (mmEl.hidden === show) mmEl.hidden = !show;
@@ -817,8 +843,12 @@ export function mountHud(container: HTMLElement): () => void {
     const pcx = worldProbe.player.x / 5, pcz = worldProbe.player.z / 5;
     const minX = Math.floor(pcx - MM_VIEW), maxX = Math.ceil(pcx + MM_VIEW);
     const minZ = Math.floor(pcz - H / scale / 2), maxZ = Math.ceil(pcz + H / scale / 2);
+
+    // clear background
     mmCtx.fillStyle = MM_BG;
     mmCtx.fillRect(0, 0, W, H);
+
+    // render surveyed region cells
     for (const region of worldProbe.regions) {
       const rx0 = Math.round(region.originX / 5), rz0 = Math.round(region.originZ / 5);
       const x0 = Math.max(0, minX - rx0), x1 = Math.min(region.w - 1, maxX - rx0);
@@ -833,57 +863,136 @@ export function mountHud(container: HTMLElement): () => void {
           let color: string;
           if (region.water && region.water[q]) color = MM_WATER;
           else if (region.road && region.road[q]) color = MM_ROAD;
-          else if (region.biome) color = MM_COLORS[region.kinds[region.biome[q]]] || '#3a4436';
-          else color = '#3a4436';
+          else if (region.biome) color = MM_COLORS[region.kinds[region.biome[q]]] || '#364032';
+          else color = '#364032';
           mmCtx.fillStyle = color;
           mmCtx.fillRect((rx0 + x + 0.5 - pcx) * scale + W / 2, sy, scale + 0.5, scale + 0.5);
         }
       }
-      // region border (surveyed land is divided into 112x96-cell regions)
+      // region border (dashed surveyor boundary)
+      mmCtx.save();
+      mmCtx.setLineDash([3, 3]);
       mmCtx.strokeStyle = 'rgba(215, 190, 120, 0.28)';
       mmCtx.lineWidth = 1;
       mmCtx.strokeRect(
         (rx0 - pcx) * scale + W / 2, (rz0 - pcz) * scale + H / 2,
         region.w * scale, region.h * scale,
       );
+      mmCtx.restore();
     }
-    // party marker (arrow = facing)
+
+    // subtle cartographic range rings and crosshairs around player
     mmCtx.save();
-    mmCtx.translate(W / 2, H / 2);
-    mmCtx.rotate(Math.atan2(Math.cos(worldProbe.player.rotY), Math.sin(worldProbe.player.rotY)) - Math.PI / 2);
-    mmCtx.fillStyle = '#f0d68a';
-    mmCtx.strokeStyle = '#1a1408';
+    mmCtx.strokeStyle = 'rgba(215, 190, 120, 0.08)';
     mmCtx.lineWidth = 1;
     mmCtx.beginPath();
-    mmCtx.moveTo(0, -6); mmCtx.lineTo(4.4, 5); mmCtx.lineTo(0, 2.6); mmCtx.lineTo(-4.4, 5);
-    mmCtx.closePath(); mmCtx.fill(); mmCtx.stroke();
+    mmCtx.arc(W / 2, H / 2, 28, 0, Math.PI * 2);
+    mmCtx.arc(W / 2, H / 2, 56, 0, Math.PI * 2);
+    mmCtx.stroke();
+    mmCtx.strokeStyle = 'rgba(215, 190, 120, 0.12)';
+    mmCtx.beginPath();
+    mmCtx.moveTo(W / 2 - 4, H / 2); mmCtx.lineTo(W / 2 + 4, H / 2);
+    mmCtx.moveTo(W / 2, H / 2 - 4); mmCtx.lineTo(W / 2, H / 2 + 4);
+    mmCtx.stroke();
     mmCtx.restore();
-    // compass letters (north = -z, the top of the map)
-    mmCtx.font = '10px Cinzel, serif';
-    mmCtx.fillStyle = '#d7be78';
+
+    // companions (other party members in the overworld)
+    const stTokens = useGame.getState().tokens;
+    const myId = useGame.getState().myTokenId;
+    for (const tok of stTokens) {
+      if (tok.kind === 'player' && tok.id !== myId && Number.isFinite(tok.x) && Number.isFinite(tok.z)) {
+        const tx = (tok.x / 5 - pcx) * scale + W / 2;
+        const tz = (tok.z / 5 - pcz) * scale + H / 2;
+        if (tx >= 3 && tx <= W - 3 && tz >= 3 && tz <= H - 3) {
+          mmCtx.fillStyle = tok.color || '#6d8a4a';
+          mmCtx.strokeStyle = '#080a0d';
+          mmCtx.lineWidth = 1.2;
+          mmCtx.beginPath();
+          mmCtx.arc(tx, tz, 2.8, 0, Math.PI * 2);
+          mmCtx.fill();
+          mmCtx.stroke();
+        }
+      }
+    }
+
+    // player marker (radar wave + forward view cone + dual-tone gilded chevron)
+    const rot = Math.atan2(Math.cos(worldProbe.player.rotY), Math.sin(worldProbe.player.rotY)) - Math.PI / 2;
+    const pingPhase = (t % 2200) / 2200;
+    const pingR = pingPhase * 24;
+    const pingAlpha = (1 - pingPhase) * 0.25;
+    mmCtx.strokeStyle = `rgba(230, 199, 102, ${pingAlpha})`;
+    mmCtx.lineWidth = 1;
+    mmCtx.beginPath();
+    mmCtx.arc(W / 2, H / 2, pingR, 0, Math.PI * 2);
+    mmCtx.stroke();
+
+    mmCtx.save();
+    mmCtx.translate(W / 2, H / 2);
+    mmCtx.rotate(rot);
+
+    // subtle forward sight cone
+    const cone = mmCtx.createRadialGradient(0, 0, 1, 0, 0, 24);
+    cone.addColorStop(0, 'rgba(246, 223, 149, 0.22)');
+    cone.addColorStop(1, 'rgba(246, 223, 149, 0)');
+    mmCtx.fillStyle = cone;
+    mmCtx.beginPath();
+    mmCtx.moveTo(0, 0);
+    mmCtx.arc(0, 0, 24, -Math.PI / 5, Math.PI / 5);
+    mmCtx.closePath();
+    mmCtx.fill();
+
+    // dual-tone gilded arrowhead
+    mmCtx.strokeStyle = '#120f09';
+    mmCtx.lineWidth = 1.2;
+    mmCtx.fillStyle = '#ffea9f';
+    mmCtx.beginPath();
+    mmCtx.moveTo(0, -6.5); mmCtx.lineTo(4.6, 5); mmCtx.lineTo(0, 2.5); mmCtx.closePath();
+    mmCtx.fill(); mmCtx.stroke();
+    mmCtx.fillStyle = '#c7a24c';
+    mmCtx.beginPath();
+    mmCtx.moveTo(0, -6.5); mmCtx.lineTo(-4.6, 5); mmCtx.lineTo(0, 2.5); mmCtx.closePath();
+    mmCtx.fill(); mmCtx.stroke();
+    mmCtx.restore();
+
+    // soft vignette overlay for cartographic depth
+    const vig = mmCtx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.44, W / 2, H / 2, Math.max(W, H) * 0.64);
+    vig.addColorStop(0, 'rgba(7, 8, 10, 0)');
+    vig.addColorStop(1, 'rgba(7, 8, 10, 0.45)');
+    mmCtx.fillStyle = vig;
+    mmCtx.fillRect(0, 0, W, H);
+
+    // North badge & cardinal marks
+    mmCtx.fillStyle = 'rgba(8, 9, 11, 0.78)';
+    mmCtx.strokeStyle = 'rgba(215, 190, 120, 0.35)';
+    mmCtx.lineWidth = 1;
+    mmCtx.fillRect(W / 2 - 8, 2, 16, 13);
+    mmCtx.strokeRect(W / 2 - 8, 2, 16, 13);
+    mmCtx.font = '700 8.5px Cinzel, serif';
+    mmCtx.fillStyle = '#f0d68a';
     mmCtx.textAlign = 'center';
-    mmCtx.fillText('N', W / 2, 11);
+    mmCtx.fillText('N', W / 2, 11.5);
+
+    mmCtx.font = '400 7.5px Cinzel, serif';
+    mmCtx.fillStyle = 'rgba(215, 190, 120, 0.55)';
     mmCtx.fillText('S', W / 2, H - 3);
-    mmCtx.fillText('W', 7, H / 2 + 4);
-    mmCtx.fillText('E', W - 8, H / 2 + 4);
-    // readout: current region + cell
+    mmCtx.fillText('W', 6, H / 2 + 3);
+    mmCtx.fillText('E', W - 6, H / 2 + 3);
+
+    // readout: sector and cell coordinates (region name is already in the top-left box)
     let label = '';
     for (const region of worldProbe.regions) {
       const lx = worldProbe.player.x - region.originX;
       const lz = worldProbe.player.z - region.originZ;
       if (lx < 0 || lz < 0 || lx >= region.w * 5 || lz >= region.h * 5) continue;
-      label = `${region.name} (${region.rx}, ${region.rz}) · cell ${Math.floor(lx / 5)}, ${Math.floor(lz / 5)}`;
+      label = `[${region.rx}, ${region.rz}] · cell ${Math.floor(lx / 5)}, ${Math.floor(lz / 5)}`;
       break;
     }
     if (label && label !== mmLastLabel) {
       mmLastLabel = label;
-      const sep = label.lastIndexOf(' · cell ');
-      mmNameEl.textContent = label.slice(0, sep);
-      mmCoordsEl.textContent = label.slice(sep + 3);
+      mmCoordsEl.textContent = label;
     } else if (!label && mmLastLabel) {
       mmLastLabel = '';
-      mmNameEl.textContent = '—';
-      mmCoordsEl.textContent = '';
+      mmCoordsEl.textContent = '—';
     }
   };
   mmRaf = requestAnimationFrame(drawMinimap);
@@ -1174,6 +1283,7 @@ export function mountHud(container: HTMLElement): () => void {
 
   return () => {
     cancelAnimationFrame(mmRaf);
+    cancelAnimationFrame(fpsRaf);
     offStore(); offRoll(); offPrompt(); offError(); offFx(); offMoveRejected();
     window.clearTimeout(moveToastTimer);
     root.removeEventListener('click', onUiClick);
